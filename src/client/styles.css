@@ -1477,6 +1477,8 @@ textarea {
   }
   .site-header {
     padding: 23px 24px;
+    flex-wrap: wrap;
+    gap: 12px;
   }
   .wordmark {
     font-size: 28px;
@@ -1486,14 +1488,18 @@ textarea {
     width: 25px;
   }
   nav {
-    gap: 17px;
-    font-size: 11px;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 0 18px;
+    font-size: 14px;
   }
   .header-cta {
     display: none;
   }
   nav .nav-link {
-    display: none;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
   }
   .home {
     padding: 0 25px;

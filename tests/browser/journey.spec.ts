@@ -114,6 +114,10 @@ test("phone: readable stacked spread, all navigation controls and no horizontal 
   });
   await page.getByRole("button", { name: "Next spread" }).click();
   await expect(page.getByText("Spread 2 of 12", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Your orders", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Your orders", exact: true })).toBeVisible();
+  await expect(page.getByText("Your hardcover orders will appear here.")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 test("browser microphone: pause/resume, interrupted upload, draft recovery and durable audio", async ({
   page,
