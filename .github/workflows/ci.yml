@@ -43,3 +43,5 @@ jobs:
           docker exec --user node --env EVERLORE_OPERATOR_PASSWORD=synthetic-ci-only-password everlore-ci node --import tsx scripts/operator.ts create ci-operator
           curl --fail --silent --header 'Host: ci.example.invalid' http://127.0.0.1:10000/readyz
           docker exec everlore-ci sh -c 'test "$(stat -c %U /var/data/everlore)" = node'
+          expected_code_hash="$(node --import tsx --input-type=module -e 'import { codeHash } from "./src/server/lab/service.ts"; process.stdout.write(codeHash())')"
+          docker exec --user node --env EVERLORE_EXPECTED_CODE_HASH="$expected_code_hash" everlore-ci node --import tsx --test tests/hosted-lab.test.ts

@@ -4,6 +4,8 @@
 !pnpm-workspace.yaml
 !src/**
 !src
+!tests/**
+!tests
 !scripts/*.ts
 !scripts/docker-entrypoint.sh
 !scripts

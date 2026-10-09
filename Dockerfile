@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu \
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY src ./src
+# Lab experiment fingerprints include the verified test sources as well as src.
+# Keep these identical to CI; never substitute a different hash in production.
+COPY tests ./tests
 COPY scripts ./scripts
 COPY public ./public
 COPY index.html vite.config.ts tsconfig.json ./
