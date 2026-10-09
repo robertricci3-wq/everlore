@@ -1,5 +1,9 @@
 import { OrderPage, OrderHistory, CommerceOperations } from "./Purchase.js";
 import { PublicExample } from "./PublicExample.js";
+import {
+  PUBLIC_ART_SHOWCASE,
+  PUBLIC_HERO_ARTWORK,
+} from "../shared/publicArt.js";
 import { OperatorAccess } from "./OperatorAccess.js";
 import { CreativeLab } from "./CreativeLab.js";
 import { useEffect, useState } from "react";
@@ -55,16 +59,9 @@ function App() {
     window.addEventListener("hashchange", change);
     return () => window.removeEventListener("hashchange", change);
   }, []);
-  async function demo() {
+  function explore() {
     setError("");
-    if (!user) { go("/example"); return; }
-    try {
-      const result = await api<{ id: string }>("/demo", {});
-      await session();
-      go(`/story/${result.id}`);
-    } catch (cause) {
-      setError((cause as Error).message);
-    }
+    go("/example");
   }
   function tell() {
     go(user?.kind === "private" ? "/capture" : "/join");
@@ -111,8 +108,16 @@ function App() {
               Creative Lab
             </a>
           )}
-          {user?.kind === "private" && <a className="nav-link" href="#/orders">Your orders</a>}
-          {user?.operator && <a className="nav-link" href="#/operator/access">Manage pilot</a>}
+          {user?.kind === "private" && (
+            <a className="nav-link" href="#/orders">
+              Your orders
+            </a>
+          )}
+          {user?.operator && (
+            <a className="nav-link" href="#/operator/access">
+              Manage pilot
+            </a>
+          )}
           {user?.kind === "private" ? (
             <button className="nav-link" onClick={() => void logout()}>
               Sign out
@@ -138,7 +143,7 @@ function App() {
             <p className="loading">Opening your story space…</p>
           </main>
         ) : path === "/" ? (
-          <Home tell={tell} demo={() => void demo()} />
+          <Home tell={tell} explore={explore} />
         ) : path === "/example" ? (
           <PublicExample />
         ) : path.split("?")[0] === "/join" || path === "/login" ? (
@@ -163,7 +168,7 @@ function App() {
         ) : path === "/lab" ? (
           <CreativeLab />
         ) : path === "/shelf" ? (
-          <Shelf user={user} tell={tell} demo={() => void demo()} />
+          <Shelf user={user} tell={tell} explore={explore} />
         ) : path === "/orders" ? (
           <OrderHistory />
         ) : path === "/operator/orders" ? (
@@ -196,7 +201,7 @@ function App() {
     </>
   );
 }
-function Home({ tell, demo }: { tell: () => void; demo: () => void }) {
+function Home({ tell, explore }: { tell: () => void; explore: () => void }) {
   return (
     <main className="home enter">
       <section className="hero">
@@ -211,17 +216,13 @@ function Home({ tell, demo }: { tell: () => void; demo: () => void }) {
             <br />
             <em>stories.</em>
           </h1>
-          <p>
-            Give your grandchildren a little of who you are. Turn the life
-            you’ve lived into beautifully imagined stories to read, love, and
-            ask for again.
-          </p>
+          <p>{PUBLIC_ART_SHOWCASE.description}</p>
           <div className="hero-actions">
             <button className="button" onClick={tell}>
               <Mic size={21} /> Tell a story <ArrowRight size={18} />
             </button>
-            <button className="example-link" onClick={demo}>
-              <BookOpen size={20} /> See an example
+            <button className="example-link" onClick={explore}>
+              <BookOpen size={20} /> Explore the illustrations
             </button>
           </div>
           <span className="hero-footnote">
@@ -241,36 +242,37 @@ function Home({ tell, demo }: { tell: () => void; demo: () => void }) {
             </svg>
           </div>
           <a
-            className="hero-book legacy-concept"
-            href="/images/legacy-garden.png"
-            target="_blank"
-            rel="noreferrer"
-            aria-label="View the original garden concept illustration"
+            className="hero-book animal-storybook"
+            href="#/example"
+            aria-label="Explore the illustrations"
           >
             <div className="hero-book-art">
               <img
-                src="/images/legacy-garden.png"
-                alt="A little girl and her grandmother at a garden gate, with moonlit flowers, fireflies and a whole world of wonder beyond."
+                src={PUBLIC_HERO_ARTWORK.src}
+                alt={PUBLIC_HERO_ARTWORK.alt}
+                width={PUBLIC_HERO_ARTWORK.width}
+                height={PUBLIC_HERO_ARTWORK.height}
+                fetchPriority="high"
               />
             </div>
             <div className="hero-book-cover">
               <span className="eyebrow">A STORY TO KEEP</span>
               <h2>
-                The garden
+                A story
                 <br />
-                beyond
+                only you
                 <br />
-                the gate
+                could tell
               </h2>
               <div className="little-rule" />
-              <p>Inspired by a grandmother’s love</p>
+              <p>Your family. A world of wonder.</p>
               <Sprout size={25} strokeWidth={1.1} />
             </div>
           </a>
           <div className="book-shadow" />
           <div className="sample-caption">
-            <span className="caption-dot" /> Original AI concept art{" "}
-            <span>· Our visual direction</span>
+            <span className="caption-dot" />
+            <span>{PUBLIC_ART_SHOWCASE.attribution}</span>
           </div>
           <span className="handwritten">
             The wonder is part of the inheritance.
@@ -320,13 +322,13 @@ function Home({ tell, demo }: { tell: () => void; demo: () => void }) {
           <h3>You bring the life. We bring the storytelling.</h3>
           <p>
             Our story studio shapes memories into adventures with heart,
-            read-aloud rhythm and a visual world of their own. The example
-            reader still uses the earlier prototype artwork.
+            read-aloud rhythm and a visual world of their own. Step inside the
+            art of an Everlore family story.
           </p>
           <StudioStatus />
         </div>
-        <button className="text-button" onClick={demo}>
-          Explore the example <ArrowRight size={17} />
+        <button className="text-button" onClick={explore}>
+          Explore the illustrations <ArrowRight size={17} />
         </button>
       </section>
     </main>
@@ -341,7 +343,11 @@ function Account({
 }) {
   const [name, setName] = useState(""),
     [password, setPassword] = useState(""),
-    [inviteCode, setInviteCode] = useState(() => new URLSearchParams(location.hash.split("?")[1] ?? "").get("invite") ?? ""),
+    [inviteCode, setInviteCode] = useState(
+      () =>
+        new URLSearchParams(location.hash.split("?")[1] ?? "").get("invite") ??
+        "",
+    ),
     [inviteRequired, setInviteRequired] = useState(false),
     [adult, setAdult] = useState(false),
     [busy, setBusy] = useState(false),
@@ -459,11 +465,11 @@ function Account({
 function Shelf({
   user,
   tell,
-  demo,
+  explore,
 }: {
   user: SessionUser | null;
   tell: () => void;
-  demo: () => void;
+  explore: () => void;
 }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]),
     [error, setError] = useState("");
@@ -532,14 +538,11 @@ function Shelf({
           <h2>Every shelf starts with one story.</h2>
           <p>
             {user
-              ? "Tell a memory, or explore the example to see what a book can feel like."
-              : "Sign in to open your stories, or take a look at our example."}
+              ? "Tell a memory, or explore the illustrations to see what a story can become."
+              : "Sign in to open your stories, or explore the illustrations."}
           </p>
-          <button
-            className="button secondary"
-            onClick={user ? demo : () => go("/login")}
-          >
-            {user ? "See an example" : "Sign in"}
+          <button className="button secondary" onClick={explore}>
+            Explore the illustrations
             <ArrowRight size={18} />
           </button>
         </div>

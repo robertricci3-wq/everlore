@@ -7,6 +7,7 @@ import {
   inspectReleaseText,
   packageRelease,
 } from "../scripts/package-release.js";
+import { PUBLIC_ART_SHOWCASE } from "../src/shared/publicArt.js";
 
 test("release scanner refuses credential-like plaintext without repeating it", () => {
   for (const value of [
@@ -63,7 +64,7 @@ test("release contains only deployable source and synthetic fixtures, with compl
       "src/server/index.ts",
       "src/server/app.ts",
       "public/fonts/literata-latin-400-normal.woff",
-      "public/images/legacy-garden.png",
+      ...PUBLIC_ART_SHOWCASE.artworks.map((artwork) => `public${artwork.src}`),
       "Dockerfile",
       "scripts/docker-entrypoint.sh",
       ".github/workflows/ci.yml",
@@ -72,6 +73,17 @@ test("release contains only deployable source and synthetic fixtures, with compl
     ]) {
       assert(paths.has(required), required);
     }
+    assert.deepEqual(
+      [...paths].filter((path) => path.startsWith("public/images/")).sort(),
+      PUBLIC_ART_SHOWCASE.artworks
+        .map((artwork) => `public${artwork.src}`)
+        .sort(),
+      "Only the three specifically approved derivative images may be published",
+    );
+    assert.equal(
+      existsSync(join(source, "public/images/legacy-garden.png")),
+      false,
+    );
     for (const file of manifest.files.filter((f) =>
       /\.(ts|tsx)$/.test(f.path),
     )) {

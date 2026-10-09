@@ -53,7 +53,9 @@ const scripts = [
 const assets = [
   "public/fonts/Literata-LICENSE",
   "public/fonts/literata-latin-400-normal.woff",
-  "public/images/legacy-garden.png",
+  "public/images/showcase/invitation-v1.webp",
+  "public/images/showcase/connection-v1.webp",
+  "public/images/showcase/remembering-v1.webp",
 ];
 const fixtures = [
   "fixtures/stories/june-lilac.md",
@@ -182,7 +184,7 @@ function archiveFiles(files: { path: string; bytes: Buffer }[]) {
 }
 const readme = `# Everlore
 
-Private family stories, original illustrated books, and a guarded purchase-to-print pilot. This source package contains application code, original public demo artwork, and synthetic development fixtures. It contains no family recordings, saved editions, database, provider keys, local logs, or previous Git history.
+Private family stories, original illustrated books, and a guarded purchase-to-print pilot. This source package contains application code, three explicitly approved public animal illustrations, and synthetic development fixtures. It contains no private manuscript, names, family recordings, saved editions, database, provider keys, local logs, or previous Git history.
 
 ## Run and verify
 
@@ -206,7 +208,7 @@ Operator commerce recovery is at /#/operator/orders. Unknown paid outcomes must 
 
 ## Source provenance
 
-The three stories in fixtures/stories are synthetic development inputs, not customer memories. Public demo art is an original Everlore asset. The font's license accompanies it. This package does not grant an additional open-source license to the application; repository publication and licensing are owner decisions.
+The three stories in fixtures/stories are synthetic development inputs, not customer memories. The three public animal illustrations were approved for display by the family whose book contains them. That permission covers these illustrations only; their story text, names, recording and private records are excluded. The font's license accompanies it. This package does not grant an additional open-source license to the application; repository publication and licensing are owner decisions.
 
 GitHub Actions runs engineering, browser, sanitized-package and Docker-mounted-storage checks with no provider secrets. Passing those checks is not a live payment, printing, physical-proof or audience-quality result.
 `;

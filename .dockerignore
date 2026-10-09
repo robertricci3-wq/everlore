@@ -9,8 +9,15 @@
 !scripts/*.ts
 !scripts/docker-entrypoint.sh
 !scripts
-!public/**
 !public
+!public/fonts
+!public/fonts/Literata-LICENSE
+!public/fonts/literata-latin-400-normal.woff
+!public/images
+!public/images/showcase
+!public/images/showcase/invitation-v1.webp
+!public/images/showcase/connection-v1.webp
+!public/images/showcase/remembering-v1.webp
 !index.html
 !vite.config.ts
 !tsconfig.json
