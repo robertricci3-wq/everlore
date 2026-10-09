@@ -20,7 +20,15 @@ import {
   imageAccepted,
   imageReviewCopyEligible,
 } from "./art-review.js";
-import { reservedBudget, settleStudioReservations } from "./budget.js";
+import {
+  reservedBudget,
+  settleStudioReservations,
+  ensureStudioBudgetRecords,
+  studioPauseRequested,
+  recordStudioCheckpoint,
+  StudioPreDispatchPause,
+} from "./budget.js";
+import type { RequestCostBound } from "./request-cost.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -93,6 +101,7 @@ interface State {
   selectedConceptId?: string;
 }
 interface RequestData {
+  strictCostGuard?: boolean;
   engineProfile?: Profile;
   autonomous?: boolean;
   lab?: { runId: string; lane: "story" | "book" };
@@ -209,6 +218,7 @@ function insertJob(
   request.engineProfile ??=
     request.seed?.engineProfile ?? activeProfile(store, config);
   request.autonomous ??= request.seed?.automation !== "guided";
+  request.strictCostGuard = config.strictCostGuard === true;
   const jobId = id();
   allocateGeneration(
     store,
@@ -775,6 +785,7 @@ export async function runStudio(
   options: { jobId?: string; shouldContinue?: () => boolean } = {},
 ) {
   if (isRecoveryLocked(store) || !availability(config).ready) return false;
+  ensureStudioBudgetRecords(store);
   store.run(
     "CREATE TABLE IF NOT EXISTS studio_image_renders(callId TEXT PRIMARY KEY,body TEXT NOT NULL)",
   );
@@ -797,6 +808,16 @@ export async function runStudio(
   if (!job) return false;
   const request: RequestData = JSON.parse(job.request),
     state: State = JSON.parse(job.state);
+  // A strict job must stay strict if it is resumed under a later server config.
+  if (config.strictCostGuard && !request.lab && !request.strictCostGuard) {
+    request.strictCostGuard = true;
+    store.run(
+      "UPDATE studio_jobs SET request=? WHERE id=?",
+      JSON.stringify(request),
+      job.id,
+    );
+  }
+  const strictCosts = !request.lab && request.strictCostGuard === true;
   const profile = request.engineProfile
     ? verifyProfile(request.engineProfile)
     : null;
@@ -851,6 +872,16 @@ export async function runStudio(
       job.baseRevision,
     );
   };
+  let reserveActiveRequest: ((bound: RequestCostBound) => void) | undefined;
+  const guardedProvider = strictCosts && !!provider.withRequestGuard;
+  if (guardedProvider)
+    provider = provider.withRequestGuard!((bound) => {
+      if (!reserveActiveRequest)
+        throw new StudioPreDispatchPause(
+          "A paid request has no active durable stage.",
+        );
+      reserveActiveRequest(bound);
+    });
   const step = async <T>(
     name: string,
     input: unknown,
@@ -876,8 +907,6 @@ export async function runStudio(
           "A request may already have completed. Reconcile it before any paid retry.",
         );
     }
-    if (options.shouldContinue && !options.shouldContinue())
-      throw new LabPaused();
     const estimate =
       kind === "local"
         ? 0
@@ -886,80 +915,149 @@ export async function runStudio(
           : kind === "audio"
             ? config.audioReserve
             : config.textReserve;
-    const callId = id();
-    store.transaction(() => {
-      const used = store.one<{ total: number }>(
-        "SELECT COALESCE(SUM(estimatedCents),0) AS total FROM studio_calls WHERE jobId=? AND status!='rejected'",
-        job.id,
-      )!.total;
-      if (used + estimate > job.allowance) {
-        const increase = used + estimate - job.allowance;
-        const totalHeld = reservedBudget(store);
-        if (!request.lab)
-          requireAllocationIncrease(store, job.id, increase, config);
-        if (
-          !request.autonomous ||
-          request.lab ||
-          totalHeld + increase > config.budgetCents
-        )
-          throw new EngineError(
-            "The saved allowance cannot cover this next request. Completed work is preserved.",
-          );
-        const allocation = {
-          version: 1,
-          reason: "Draw only on the already authorized family allowance",
-          fromCents: job.allowance,
-          toCents: used + estimate,
-          totalAuthorizedCents: config.budgetCents,
-        };
-        store.run(
-          "INSERT INTO studio_steps VALUES(?,?,?,'completed',?)",
-          job.id,
-          `budget_allocation_${callId}`,
-          hash(canonical(allocation)),
-          JSON.stringify(allocation),
+    const callId = id(),
+      start = Date.now();
+    let dispatched = false,
+      status = "ambiguous_failure";
+    const previousGuard = reserveActiveRequest;
+    const checkContinue = () => {
+      if (!owns()) throw new EngineError("This studio job changed.");
+      if (options.shouldContinue && !options.shouldContinue()) {
+        if (request.lab) throw new LabPaused();
+        throw new StudioPreDispatchPause(
+          "The story is paused before its next request. Completed work is saved.",
+          "pause",
         );
-        store.run(
-          "UPDATE studio_jobs SET allowance=? WHERE id=?",
-          used + estimate,
-          job.id,
-        );
-        store.run(
-          "UPDATE engine_budget SET allowance=allowance+? WHERE runId=?",
-          increase,
-          job.id,
-        );
-        job.allowance = used + estimate;
       }
-      store.run(
-        "INSERT OR IGNORE INTO studio_steps VALUES(?,?,?,'started',NULL)",
-        job.id,
-        name,
-        inputHash,
-      );
-      store.run("UPDATE studio_jobs SET stage=? WHERE id=?", name, job.id);
-      if (kind !== "local")
+      if (!request.lab && studioPauseRequested(store, job.id))
+        throw new StudioPreDispatchPause(
+          "The story is paused before its next request. Completed work is saved.",
+          "pause",
+        );
+    };
+    const reserve = (cents: number, bound?: RequestCostBound) => {
+      if (dispatched)
+        throw new EngineError(
+          "A stage attempted more than one paid request. Reconcile the saved attempt.",
+        );
+      if (bound) checkContinue();
+      if (
+        !Number.isSafeInteger(cents) ||
+        cents < 0 ||
+        (bound && (cents === 0 || bound.kind !== kind))
+      )
+        throw new StudioPreDispatchPause(
+          "The next request has no valid conservative cost bound.",
+        );
+      store.transaction(() => {
+        const used = store.one<{ total: number }>(
+          "SELECT COALESCE(SUM(estimatedCents),0) AS total FROM studio_calls WHERE jobId=? AND status!='rejected'",
+          job.id,
+        )!.total;
+        const increase = Math.max(0, used + cents - job.allowance);
+        const totalHeld = !request.lab ? reservedBudget(store) : 0;
+        if (
+          (kind !== "local" &&
+            !request.lab &&
+            totalHeld + increase > config.budgetCents) ||
+          (increase > 0 && (!request.autonomous || request.lab))
+        )
+          throw new StudioPreDispatchPause(
+            `The remaining authorized allowance cannot cover the next request's ${bound ? "conservative cost bound" : "estimate"}. No request was sent; completed work is saved.`,
+            "budget",
+            cents,
+          );
+        if (increase > 0) {
+          if (!request.lab) {
+            try {
+              requireAllocationIncrease(store, job.id, increase, config);
+            } catch (error) {
+              if (error instanceof AccessError)
+                throw new StudioPreDispatchPause(
+                  error.message,
+                  "budget",
+                  cents,
+                );
+              throw error;
+            }
+          }
+          const allocation = {
+            version: 1,
+            reason: "Draw only on the already authorized family allowance",
+            fromCents: job.allowance,
+            toCents: used + cents,
+            totalAuthorizedCents: config.budgetCents,
+          };
+          store.run(
+            "INSERT INTO studio_steps VALUES(?,?,?,'completed',?)",
+            job.id,
+            `budget_allocation_${callId}`,
+            hash(canonical(allocation)),
+            JSON.stringify(allocation),
+          );
+          store.run(
+            "UPDATE studio_jobs SET allowance=? WHERE id=?",
+            used + cents,
+            job.id,
+          );
+          store.run(
+            "UPDATE engine_budget SET allowance=allowance+? WHERE runId=?",
+            increase,
+            job.id,
+          );
+          job.allowance = used + cents;
+        }
         store.run(
-          "INSERT INTO studio_calls VALUES(?,?,?,?,?,?,'started',NULL,NULL,NULL,?,NULL,?)",
-          callId,
+          "INSERT OR IGNORE INTO studio_steps VALUES(?,?,?,'started',NULL)",
           job.id,
           name,
-          kind,
-          kind === "image"
-            ? config.imageModel
-            : kind === "audio"
-              ? config.audioModel
-              : config.textModel,
           inputHash,
-          estimate,
-          now(),
         );
-    });
-    const start = Date.now();
-    let status = "ambiguous_failure";
+        store.run("UPDATE studio_jobs SET stage=? WHERE id=?", name, job.id);
+        if (kind !== "local") {
+          store.run(
+            "INSERT INTO studio_calls VALUES(?,?,?,?,?,?,'started',NULL,NULL,NULL,?,NULL,?)",
+            callId,
+            job.id,
+            name,
+            kind,
+            bound?.model ??
+              (kind === "image"
+                ? config.imageModel
+                : kind === "audio"
+                  ? config.audioModel
+                  : config.textModel),
+            inputHash,
+            cents,
+            now(),
+          );
+          if (bound)
+            store.run(
+              "INSERT INTO studio_request_bounds VALUES(?,?)",
+              callId,
+              JSON.stringify(bound),
+            );
+        }
+      });
+      if (kind !== "local") dispatched = true;
+    };
     try {
+      checkContinue();
+      if (kind !== "local" && strictCosts) {
+        if (!guardedProvider || !provider.validateRequestCosts)
+          throw new StudioPreDispatchPause(
+            "This provider cannot verify conservative request costs. No request was sent.",
+          );
+        // Validate all required modalities before even the first transcription.
+        provider.validateRequestCosts();
+        reserveActiveRequest = (bound) => reserve(bound.maxCostCents, bound);
+      } else reserve(estimate);
       const result = await fn();
       if (!owns()) throw new EngineError("This studio job changed.");
+      if (strictCosts && kind !== "local" && !dispatched)
+        throw new StudioPreDispatchPause(
+          "The provider returned without a verified request reservation.",
+        );
       store.run(
         "UPDATE studio_steps SET state='completed',result=? WHERE jobId=? AND stage=?",
         JSON.stringify(result),
@@ -969,7 +1067,25 @@ export async function runStudio(
       status = "completed";
       return result;
     } catch (error) {
-      if (kind !== "local" && error instanceof ProviderRequestError) {
+      if (
+        !dispatched &&
+        (error instanceof StudioPreDispatchPause ||
+          (error instanceof Error &&
+            "preDispatch" in error &&
+            error.preDispatch === true))
+      ) {
+        const stopped =
+          error instanceof StudioPreDispatchPause
+            ? error
+            : new StudioPreDispatchPause(error.message);
+        // Nested local orchestration must not replace the actual blocked stage.
+        if (!stopped.checkpointRecorded) {
+          recordStudioCheckpoint(store, job.id, name, inputHash, stopped);
+          stopped.checkpointRecorded = true;
+        }
+        throw stopped;
+      }
+      if (dispatched && error instanceof ProviderRequestError) {
         status = error.failure.retrySafe ? "rejected" : "ambiguous_failure";
         store.run(
           "INSERT OR REPLACE INTO studio_call_failures VALUES(?,?)",
@@ -986,13 +1102,20 @@ export async function runStudio(
       }
       throw error;
     } finally {
-      if (kind !== "local") {
+      reserveActiveRequest = previousGuard;
+      if (dispatched) {
         const receipt = provider.takeReceipt?.();
         if (receipt?.imageRender)
           store.run(
             "INSERT OR IGNORE INTO studio_image_renders VALUES(?,?)",
             callId,
             JSON.stringify(receipt.imageRender),
+          );
+        if (receipt?.meteredCost)
+          store.run(
+            "INSERT OR IGNORE INTO studio_metered_costs VALUES(?,?)",
+            callId,
+            JSON.stringify(receipt.meteredCost),
           );
         store.run(
           "UPDATE studio_calls SET status=?,latencyMs=?,requestId=?,usage=? WHERE id=?",
@@ -2326,6 +2449,7 @@ export async function runStudio(
       pause(
         error instanceof LabPaused ? "lab_paused" : "needs_attention",
         error instanceof EngineError ||
+          error instanceof StudioPreDispatchPause ||
           error instanceof ProviderRequestError ||
           error instanceof AccessError
           ? error.message

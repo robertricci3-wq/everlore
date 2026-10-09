@@ -7,7 +7,7 @@ import {
   evaluateStory,
   canAssembleReviewCopy,
 } from "./editorial.js";
-import { reservedBudget } from "./budget.js";
+import { reservedBudget, pendingStudioCheckpoint } from "./budget.js";
 import { z } from "zod";
 import { id, now, type Store, type ProjectRow } from "../store.js";
 import { EngineError } from "./pipeline.js";
@@ -24,6 +24,47 @@ export function studioRecovery(store: Store, jobId: string) {
   );
   if (!job || !["needs_attention", "needs_editor"].includes(job.status))
     return null;
+  const checkpoint = pendingStudioCheckpoint(store, jobId, job.stage);
+  if (checkpoint) {
+    const pending = store.one<{ state: string; inputHash: string }>(
+      "SELECT state,inputHash FROM studio_steps WHERE jobId=? AND stage=?",
+      jobId,
+      job.stage,
+    );
+    // A pause marker can never make an un-reconciled paid attempt retryable.
+    const unsafe = store.one(
+      "SELECT c.id FROM studio_calls c WHERE c.jobId=? AND c.stage=? AND c.status!='rejected' AND NOT EXISTS(SELECT 1 FROM studio_recoveries r WHERE r.callId=c.id) LIMIT 1",
+      jobId,
+      job.stage,
+    );
+    if (
+      !unsafe &&
+      pending?.state !== "completed" &&
+      (!pending || pending.inputHash === checkpoint.inputHash)
+    ) {
+      reservedBudget(store);
+      const held =
+        store.one<{ allowance: number }>(
+          "SELECT allowance FROM engine_budget WHERE runId=?",
+          jobId,
+        )?.allowance ?? 0;
+      const ceiling = Math.max(
+        job.allowance,
+        held + (checkpoint.requiredCents ?? 0),
+      );
+      return {
+        preDispatch: true,
+        localRepair: false,
+        callId: checkpoint.id,
+        stage: checkpoint.stage,
+        requestId: null,
+        uncertain: false,
+        extraReserveUsd: Math.max(0, ceiling - job.allowance) / 100,
+        resumeReserveUsd: Math.max(0, ceiling - held) / 100,
+        message: checkpoint.message,
+      };
+    }
+  }
   const attempt = store.one<{
     id: string;
     stage: string;
@@ -228,6 +269,7 @@ export function studioRecovery(store: Store, jobId: string) {
       jobId,
     )?.allowance ?? 0;
   return {
+    preDispatch: false,
     metadataRepair,
     evidenceRepair,
     editorialRepair,
@@ -321,7 +363,8 @@ export function resumeStudio(
     const extra = Math.round(recovery.extraReserveUsd * 100);
     const used = reservedBudget(store);
     const remaining = Math.round(recovery.resumeReserveUsd * 100);
-    if (remaining > 0) requireAllocationIncrease(store, job.id, remaining, config);
+    if (remaining > 0)
+      requireAllocationIncrease(store, job.id, remaining, config);
     if (used + remaining > config.budgetCents)
       throw new EngineError(
         `This retry needs $${(remaining / 100).toFixed(2)} more reserved allowance for its remaining work. Update your total allowance before resuming.`,
@@ -352,6 +395,14 @@ export function resumeStudio(
       job.id,
       recovery.stage,
     );
+    if (recovery.preDispatch) {
+      store.run(
+        "UPDATE studio_checkpoints SET resumedAt=? WHERE id=? AND resumedAt IS NULL",
+        now(),
+        body.callId,
+      );
+      store.run("DELETE FROM studio_pause_requests WHERE jobId=?", job.id);
+    }
     store.run(
       "UPDATE studio_jobs SET status='queued',error=NULL,allowance=allowance+?,leaseToken=NULL,leaseUntil=0 WHERE id=?",
       extra,

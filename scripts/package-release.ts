@@ -41,6 +41,7 @@ const scripts = [
   "run.sh",
   "operator.ts",
   "openai.ts",
+  "hosted-book-test.ts",
   "backup.ts",
   "commerce.ts",
   "prodigi.ts",

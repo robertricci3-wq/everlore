@@ -9,6 +9,15 @@ import {
 } from "../../shared/imageRender.js";
 import type { EngineAvailability } from "../../shared/engine.js";
 import {
+  assertSupportedCostPlan,
+  audioRequestCost,
+  imageRequestCost,
+  meteredCostEstimate,
+  structuredRequestCost,
+  type MeteredCostEstimate,
+  type RequestCostBound,
+} from "./request-cost.js";
+import {
   providerFailureMessage,
   type ProviderFailure,
 } from "../../shared/providerFailure.js";
@@ -90,10 +99,14 @@ export interface ProviderReceipt {
   requestId: string | null;
   usage: Record<string, number> | null;
   imageRender?: ImageRenderReceipt;
+  requestCostBound?: RequestCostBound;
+  meteredCost?: MeteredCostEstimate | null;
 }
 export interface Provider {
   withModels?(models: { text: string; image: string; audio: string }): Provider;
   withImageRender?(specification: ImageRenderSpecification): Provider;
+  withRequestGuard?(guard: (bound: RequestCostBound) => void): Provider;
+  validateRequestCosts?(): void;
   takeReceipt?(): ProviderReceipt | null;
   transcribe(bytes: Buffer, mime: string): Promise<string>;
   structured<T>(
@@ -117,6 +130,7 @@ export interface EngineConfig {
   audioModel: string;
   imageRender?: ImageRenderSpecification;
   connectionError?: string;
+  strictCostGuard?: boolean;
 }
 // No implicit paid allowance. The operator sets conservative per-request reserves
 // against current pricing; reserves are not a claim about actual provider billing.
@@ -135,6 +149,7 @@ export function engineConfig(env = process.env): EngineConfig {
     textModel: "gpt-5.4",
     imageModel: "gpt-image-2",
     audioModel: "gpt-4o-transcribe",
+    strictCostGuard: env.EVERLORE_STRICT_COST_GUARD === "1",
   };
 }
 export function availability(config: EngineConfig): EngineAvailability {
@@ -158,13 +173,31 @@ export function availability(config: EngineConfig): EngineAvailability {
   };
 }
 export class OpenAIProvider implements Provider {
+  withRequestGuard(guard: (bound: RequestCostBound) => void) {
+    return new OpenAIProvider(this.config, this.request, guard);
+  }
+  validateRequestCosts() {
+    if (!this.requestGuard) return;
+    assertSupportedCostPlan(
+      {
+        text: this.config.textModel,
+        image: this.config.imageModel,
+        audio: this.config.audioModel,
+      },
+      this.config.imageRender ?? legacyImageRender(this.config.imageModel),
+    );
+  }
   withImageRender(specification: ImageRenderSpecification) {
     const imageRender = ImageRenderSpec.parse(specification);
     if (imageRender.model !== this.config.imageModel)
       throw new Error(
         "The render specification must match the pinned image model.",
       );
-    return new OpenAIProvider({ ...this.config, imageRender }, this.request);
+    return new OpenAIProvider(
+      { ...this.config, imageRender },
+      this.request,
+      this.requestGuard,
+    );
   }
   withModels(models: { text: string; image: string; audio: string }) {
     return new OpenAIProvider(
@@ -175,6 +208,7 @@ export class OpenAIProvider implements Provider {
         audioModel: models.audio,
       },
       this.request,
+      this.requestGuard,
     );
   }
   private receipt: ProviderReceipt | null = null;
@@ -186,12 +220,27 @@ export class OpenAIProvider implements Provider {
   constructor(
     private config: EngineConfig,
     private request: typeof fetch = fetch,
+    private requestGuard?: (bound: RequestCostBound) => void,
   ) {}
-  private async post(path: string, body: FormData | object) {
+  private async post(
+    path: string,
+    body: FormData | object,
+    cost: () => RequestCostBound,
+  ) {
     if (!availability(this.config).ready)
       throw new Error("Provider is disabled");
     this.receipt = null;
     const multipart = body instanceof FormData;
+    // Serialize before reserving funds. A local encoding failure is not a paid
+    // provider attempt. Guard failures stay outside the ambiguous network catch.
+    const payload = multipart ? body : JSON.stringify(body);
+    const bound = this.requestGuard ? cost() : undefined;
+    if (bound) this.requestGuard!(bound);
+    this.receipt = {
+      requestId: null,
+      usage: null,
+      ...(bound ? { requestCostBound: bound, meteredCost: null } : {}),
+    };
     let response: Response;
     try {
       response = await this.request(`https://api.openai.com/v1/${path}`, {
@@ -201,7 +250,7 @@ export class OpenAIProvider implements Provider {
           Authorization: `Bearer ${this.config.apiKey}`,
           ...(!multipart ? { "Content-Type": "application/json" } : {}),
         },
-        body: multipart ? body : JSON.stringify(body),
+        body: payload,
         signal: AbortSignal.timeout(180000),
       });
     } catch {
@@ -218,6 +267,7 @@ export class OpenAIProvider implements Provider {
         ? response.headers.get("x-request-id")
         : null,
       usage: null,
+      ...(bound ? { requestCostBound: bound, meteredCost: null } : {}),
     };
     // Never include provider response bodies, source text or credentials in errors.
     if (!response.ok) throw await rejectedResponse(response);
@@ -231,9 +281,17 @@ export class OpenAIProvider implements Provider {
               "output_tokens",
               "total_tokens",
               "seconds",
-            ].includes(key) && typeof value === "number",
+            ].includes(key) &&
+            typeof value === "number" &&
+            Number.isFinite(value) &&
+            value >= 0,
         ),
       ) as Record<string, number>;
+      if (bound)
+        this.receipt.meteredCost = meteredCostEstimate(
+          bound,
+          this.receipt.usage,
+        );
     }
     return result;
   }
@@ -255,7 +313,9 @@ export class OpenAIProvider implements Provider {
     );
     form.append("model", this.config.audioModel);
     form.append("response_format", "json");
-    const result = await this.post("audio/transcriptions", form);
+    const result = await this.post("audio/transcriptions", form, () =>
+      audioRequestCost(this.config.audioModel, bytes.length),
+    );
     return z.string().trim().min(10).max(50000).parse(result.text);
   }
   async structured<T>(
@@ -279,9 +339,10 @@ export class OpenAIProvider implements Provider {
         detail: "high",
       });
     }
-    const result = await this.post("responses", {
+    const body = {
       model: this.config.textModel,
       store: false,
+      service_tier: "default",
       max_output_tokens: 12000,
       instructions,
       input: [{ role: "user", content }],
@@ -293,7 +354,18 @@ export class OpenAIProvider implements Provider {
           schema: z.toJSONSchema(schema),
         },
       },
-    });
+    };
+    const result = await this.post("responses", body, () =>
+      structuredRequestCost({
+        model: body.model,
+        serviceTier: body.service_tier,
+        maxOutputTokens: body.max_output_tokens,
+        serializedText: JSON.stringify(body, (key, value) =>
+          key === "image_url" ? "" : value,
+        ),
+        highDetailImageCount: images.length,
+      }),
+    );
     if (result.status !== "completed")
       throw new Error("Incomplete editorial response");
     const envelope = z
@@ -354,8 +426,13 @@ export class OpenAIProvider implements Provider {
           new Blob([new Uint8Array(bytes)], { type: "image/png" }),
           `reference-${index + 1}.png`,
         );
-      result = await this.post("images/edits", form);
-    } else result = await this.post("images/generations", params);
+      result = await this.post("images/edits", form, () =>
+        imageRequestCost(specification, prompt, references.length),
+      );
+    } else
+      result = await this.post("images/generations", params, () =>
+        imageRequestCost(specification, prompt, 0),
+      );
     const output = z
       .object({
         data: z.array(z.object({ b64_json: z.string().min(1) })).length(1),
