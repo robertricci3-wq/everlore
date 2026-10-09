@@ -23,6 +23,12 @@ test("Creative Lab: offline comparison, optional feedback and no approval or rel
   await page.getByLabel("Shelf name").fill(name);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Open your shelf" }).click();
+  // Login completes asynchronously. Navigating before the shelf opens can
+  // cancel the request and leave the browser outside the private Lab.
+  await expect(page).toHaveURL(/#\/shelf$/);
+  const labAccess = await page.request.get("/api/lab");
+  expect(labAccess.status()).toBe(200);
+  expect((await labAccess.json()).allowed).toBe(true);
   await page.goto("/#/lab");
   await expect(
     page.getByRole("heading", {
