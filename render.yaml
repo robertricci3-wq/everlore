@@ -1,0 +1,26 @@
+# One instance: SQLite and the durable worker share one persistent disk.
+# Deploy only after selecting a paid hosting plan in your own account.
+services:
+  - type: web
+    name: everlore
+    runtime: docker
+    plan: standard
+    numInstances: 1
+    healthCheckPath: /healthz
+    disk:
+      name: everlore-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: DISABLE_WORKER
+        value: "1"
+      - key: CHECKOUT_ENABLED
+        value: "false"
+      - key: COMMERCE_MODE
+        value: test
+      - key: PRINT_ASSET_SECRET
+        generateValue: true
+      - key: BOOK_PRICE_CENTS
+        value: "14900"
+      - key: PRINT_PROOF_APPROVED
+        value: "false"

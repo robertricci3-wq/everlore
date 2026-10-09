@@ -1,0 +1,15 @@
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!src/**
+!src
+!scripts/*.ts
+!scripts/docker-entrypoint.sh
+!scripts
+!public/**
+!public
+!index.html
+!vite.config.ts
+!tsconfig.json
+!Dockerfile
