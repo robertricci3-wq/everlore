@@ -31,10 +31,10 @@ jobs:
         run: node --import tsx scripts/package-release.ts ../verified-release
       - name: Build deployable image
         run: docker build --tag everlore:ci .
-      - name: Test mounted-disk startup without provider access
+      - name: Test immutable production startup and mounted disk without provider access
         run: |
           docker volume create everlore-ci-data
-          docker run --detach --name everlore-ci --publish 10000:10000 --volume everlore-ci-data:/var/data --env DISABLE_WORKER=1 --env PUBLIC_ORIGIN=https://ci.example.invalid everlore:ci
+          docker run --detach --read-only --tmpfs /tmp:rw,nosuid,size=64m --name everlore-ci --publish 10000:10000 --volume everlore-ci-data:/var/data --env NODE_ENV=production --env DISABLE_WORKER=1 --env PUBLIC_ORIGIN=https://ci.example.invalid everlore:ci
           trap 'docker logs everlore-ci; docker rm --force everlore-ci; docker volume rm everlore-ci-data' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent --header 'Host: ci.example.invalid' http://127.0.0.1:10000/healthz; then break; fi
@@ -43,5 +43,15 @@ jobs:
           docker exec --user node --env EVERLORE_OPERATOR_PASSWORD=synthetic-ci-only-password everlore-ci node --import tsx scripts/operator.ts create ci-operator
           curl --fail --silent --header 'Host: ci.example.invalid' http://127.0.0.1:10000/readyz
           docker exec everlore-ci sh -c 'test "$(stat -c %U /var/data/everlore)" = node'
+          docker exec --user node everlore-ci node --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { accessSync, constants, readFileSync } from "node:fs";
+            const command = readFileSync("/proc/1/cmdline", "utf8").split("\0").filter(Boolean);
+            assert.equal(command[0].split("/").at(-1), "node");
+            assert.deepEqual(command.slice(1), ["--import", "tsx", "src/server/index.ts"]);
+            assert.equal(process.env.NODE_ENV, "production");
+            assert.throws(() => accessSync("/app", constants.W_OK));
+            console.log("Direct Node production process is healthy with immutable /app.");
+          '
           expected_code_hash="$(node --import tsx --input-type=module -e 'import { codeHash } from "./src/server/lab/service.ts"; process.stdout.write(codeHash())')"
           docker exec --user node --env EVERLORE_EXPECTED_CODE_HASH="$expected_code_hash" everlore-ci node --import tsx --test tests/hosted-lab.test.ts

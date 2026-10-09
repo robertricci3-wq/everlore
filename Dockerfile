@@ -18,4 +18,6 @@ ENV DATA_DIR=/var/data/everlore
 ENV PORT=10000
 EXPOSE 10000
 ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
-CMD ["pnpm", "start"]
+# Dependencies were installed while building. Start Node directly so runtime
+# package-manager checks cannot try to modify the root-owned application.
+CMD ["node", "--import", "tsx", "src/server/index.ts"]
