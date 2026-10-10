@@ -2535,14 +2535,14 @@ export async function runStudio(
     const artHashes: string[] = [];
     for (let i = 0; i < 12; i++) {
       const h = await picture(i);
-      if (!h) {
-        pause(
-          "needs_editor",
-          `Spread ${i + 1} needs art direction after two corrections.`,
-        );
-        return true;
-      }
-      artHashes.push(h);
+      // One exhausted scene must not discard the chance to complete independent
+      // pages. Keep its null checkpoint; do not request a fourth render.
+      artHashes.push(h ?? "");
+    }
+    const blockedSpreads = artHashes.flatMap((h, i) => h ? [] : [i + 1]);
+    if (blockedSpreads.length) {
+      pause("needs_editor", `Spreads ${blockedSpreads.join(", ")} need art direction after two corrections. Other completed illustrations are saved.`);
+      return true;
     }
     if (new Set(artHashes).size !== 12)
       throw new EngineError("Repeated scene files need editorial review.");

@@ -259,7 +259,11 @@ export function studioRecovery(store: Store, jobId: string) {
         StoryManuscript.parse(read("accepted_story").manuscript), ScenePlan.parse(read("scenes"))).length === 0;
     } catch { /* Invalid or incomplete evidence cannot authorize recovery. */ }
   }
+  const continueIndependentArt = job.status === "needs_editor" &&
+    !!store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage LIKE 'accepted_picture_meaning_v2_%' AND state='completed' AND result='null'", jobId) &&
+    (store.one<{ n: number }>("SELECT COUNT(*) n FROM studio_steps WHERE jobId=? AND stage LIKE 'accepted_picture_meaning_v2_%' AND state='completed'", jobId)?.n ?? 0) < 12;
   const localRepair =
+    continueIndependentArt ||
     sceneReferenceRepair ||
     metadataRepair ||
     evidenceRepair ||
@@ -294,6 +298,7 @@ export function studioRecovery(store: Store, jobId: string) {
     editorialRepair,
     localRepair,
     sceneReferenceRepair,
+    continueIndependentArt,
     reviewCopyReady,
     artRequirementsRepair,
     artDirectionRepair,

@@ -886,3 +886,27 @@ test("saved animal families prefer recent use over recent creation and stay owne
     f.close();
   }
 });
+
+
+test("an exhausted non-preview scene retains its failure while independent pages finish", async () => {
+  const t = setup(), p = new StudioFake();
+  p.onStructured = (name) => { p.incorrectArt = name.startsWith("picture_7_"); };
+  try {
+    queueStudio(t.store, t.project(), { ...consent, autonomous: true }, testConfig);
+    await runStudio(t.store, p, testConfig);
+    assert.equal(studioView(t.store, "memory")!.status, "needs_editor");
+    const pages = t.store.all<{ stage: string; result: string }>(
+      "SELECT stage,result FROM studio_steps WHERE stage LIKE 'accepted_picture_meaning_v2_%' AND state='completed'",
+    );
+    assert.equal(pages.length, 12);
+    assert.equal(pages.filter(r => r.result !== "null").length, 11);
+    assert.equal(pages.find(r => r.stage.endsWith("_7"))!.result, "null");
+    assert.equal(t.store.all("SELECT * FROM revisions").length, 0);
+    assert.equal(p.calls.filter(n => n.startsWith("image_")).length, 16);
+    const before = p.calls.length;
+    t.store.run("UPDATE studio_jobs SET status='queued'");
+    await runStudio(t.store, p, testConfig);
+    assert.equal(p.calls.length, before);
+    assert.equal(studioView(t.store, "memory")!.status, "needs_editor");
+  } finally { t.close(); }
+});
