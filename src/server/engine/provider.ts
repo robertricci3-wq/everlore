@@ -11,9 +11,16 @@ import type { EngineAvailability } from "../../shared/engine.js";
 import {
   assertSupportedCostPlan,
   audioRequestCost,
+  estimatedAudioRequestCost,
+  estimatedImageRequestCost,
+  estimatedStructuredRequestCost,
   imageRequestCost,
   meteredCostEstimate,
+  parseEstimatedRequestPolicy,
+  REQUEST_RATE_CARD,
   structuredRequestCost,
+  type EstimatedRequestPolicy,
+  type EstimatedRequestReservation,
   type MeteredCostEstimate,
   type RequestCostBound,
 } from "./request-cost.js";
@@ -95,17 +102,60 @@ export async function checkProviderConnection(
   if (!response.ok) throw await rejectedResponse(response);
 }
 
+/** Keep only documented numeric counters. Flatten known input detail fields so
+ * old numeric usage readers remain compatible; never persist provider text. */
+export function sanitizedProviderUsage(
+  value: unknown,
+): Record<string, number> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const usage = value as Record<string, unknown>;
+  const result: Record<string, number> = {};
+  for (const key of [
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "seconds",
+  ]) {
+    const n = usage[key];
+    if (
+      typeof n === "number" &&
+      Number.isFinite(n) &&
+      n >= 0 &&
+      (key === "seconds" || Number.isSafeInteger(n))
+    )
+      result[key] = n;
+  }
+  const details = usage.input_tokens_details;
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    for (const [key, target] of [
+      ["text_tokens", "input_text_tokens"],
+      ["image_tokens", "input_image_tokens"],
+    ]) {
+      const n = (details as Record<string, unknown>)[key];
+      if (typeof n === "number" && Number.isSafeInteger(n) && n >= 0)
+        result[target] = n;
+    }
+  }
+  return Object.keys(result).length ? result : null;
+}
+
 export interface ProviderReceipt {
   requestId: string | null;
   usage: Record<string, number> | null;
   imageRender?: ImageRenderReceipt;
   requestCostBound?: RequestCostBound;
+  estimatedRequestReservation?: EstimatedRequestReservation;
   meteredCost?: MeteredCostEstimate | null;
 }
 export interface Provider {
   withModels?(models: { text: string; image: string; audio: string }): Provider;
   withImageRender?(specification: ImageRenderSpecification): Provider;
   withRequestGuard?(guard: (bound: RequestCostBound) => void): Provider;
+  withEstimatedPolicy?(
+    policy: EstimatedRequestPolicy,
+    policyHash: string,
+    guard: (reservation: EstimatedRequestReservation) => void,
+  ): Provider;
   validateRequestCosts?(): void;
   takeReceipt?(): ProviderReceipt | null;
   transcribe(bytes: Buffer, mime: string): Promise<string>;
@@ -131,6 +181,9 @@ export interface EngineConfig {
   imageRender?: ImageRenderSpecification;
   connectionError?: string;
   strictCostGuard?: boolean;
+  /** Runtime-scoped dispatch context; never loaded implicitly from environment. */
+  pilotCampaignId?: string;
+  pilotCreationId?: string;
 }
 // No implicit paid allowance. The operator sets conservative per-request reserves
 // against current pricing; reserves are not a claim about actual provider billing.
@@ -174,9 +227,59 @@ export function availability(config: EngineConfig): EngineAvailability {
 }
 export class OpenAIProvider implements Provider {
   withRequestGuard(guard: (bound: RequestCostBound) => void) {
+    if (this.estimatedPolicy)
+      throw new Error(
+        "Strict and estimated request policies cannot be combined.",
+      );
     return new OpenAIProvider(this.config, this.request, guard);
   }
+  withEstimatedPolicy(
+    policy: EstimatedRequestPolicy,
+    policyHash: string,
+    guard: (reservation: EstimatedRequestReservation) => void,
+  ) {
+    if (this.requestGuard)
+      throw new Error(
+        "Strict and estimated request policies cannot be combined.",
+      );
+    if (!/^[a-f0-9]{64}$/.test(policyHash))
+      throw new Error("A frozen pilot policy hash is required.");
+    return new OpenAIProvider(this.config, this.request, undefined, {
+      policy: Object.freeze(parseEstimatedRequestPolicy(policy)),
+      policyHash,
+      guard,
+    });
+  }
   validateRequestCosts() {
+    if (this.estimatedPolicy) {
+      const { policy, policyHash } = this.estimatedPolicy;
+      const specification =
+        this.config.imageRender ?? legacyImageRender(this.config.imageModel);
+      if (specification.model !== this.config.imageModel)
+        throw new Error(
+          "The render specification must match the pinned image model.",
+        );
+      estimatedStructuredRequestCost(
+        {
+          model: this.config.textModel,
+          serviceTier: "default",
+          maxOutputTokens: 12000,
+          serializedText: "Preflight only; never transmitted.",
+          highDetailImageCount: 0,
+        },
+        policy,
+        policyHash,
+      );
+      estimatedImageRequestCost(
+        specification,
+        "Preflight only; never transmitted.",
+        1,
+        policy,
+        policyHash,
+      );
+      estimatedAudioRequestCost(this.config.audioModel, 1, policy, policyHash);
+      return;
+    }
     if (!this.requestGuard) return;
     assertSupportedCostPlan(
       {
@@ -197,6 +300,7 @@ export class OpenAIProvider implements Provider {
       { ...this.config, imageRender },
       this.request,
       this.requestGuard,
+      this.estimatedPolicy,
     );
   }
   withModels(models: { text: string; image: string; audio: string }) {
@@ -209,6 +313,7 @@ export class OpenAIProvider implements Provider {
       },
       this.request,
       this.requestGuard,
+      this.estimatedPolicy,
     );
   }
   private receipt: ProviderReceipt | null = null;
@@ -221,11 +326,25 @@ export class OpenAIProvider implements Provider {
     private config: EngineConfig,
     private request: typeof fetch = fetch,
     private requestGuard?: (bound: RequestCostBound) => void,
-  ) {}
+    private estimatedPolicy?: {
+      policy: EstimatedRequestPolicy;
+      policyHash: string;
+      guard: (reservation: EstimatedRequestReservation) => void;
+    },
+  ) {
+    if (requestGuard && estimatedPolicy)
+      throw new Error(
+        "Strict and estimated request policies cannot be combined.",
+      );
+  }
   private async post(
     path: string,
     body: FormData | object,
     cost: () => RequestCostBound,
+    estimatedCost?: (
+      policy: EstimatedRequestPolicy,
+      policyHash: string,
+    ) => EstimatedRequestReservation,
   ) {
     if (!availability(this.config).ready)
       throw new Error("Provider is disabled");
@@ -236,10 +355,25 @@ export class OpenAIProvider implements Provider {
     const payload = multipart ? body : JSON.stringify(body);
     const bound = this.requestGuard ? cost() : undefined;
     if (bound) this.requestGuard!(bound);
+    let estimate: EstimatedRequestReservation | undefined;
+    if (this.estimatedPolicy) {
+      if (!estimatedCost)
+        throw new Error("This request has no pilot cost policy.");
+      estimate = estimatedCost(
+        this.estimatedPolicy.policy,
+        this.estimatedPolicy.policyHash,
+      );
+      this.estimatedPolicy.guard(estimate);
+    }
+    const costMetadata = {
+      ...(bound ? { requestCostBound: bound } : {}),
+      ...(estimate ? { estimatedRequestReservation: estimate } : {}),
+      meteredCost: null,
+    };
     this.receipt = {
       requestId: null,
       usage: null,
-      ...(bound ? { requestCostBound: bound, meteredCost: null } : {}),
+      ...costMetadata,
     };
     let response: Response;
     try {
@@ -267,31 +401,33 @@ export class OpenAIProvider implements Provider {
         ? response.headers.get("x-request-id")
         : null,
       usage: null,
-      ...(bound ? { requestCostBound: bound, meteredCost: null } : {}),
+      ...costMetadata,
     };
     // Never include provider response bodies, source text or credentials in errors.
     if (!response.ok) throw await rejectedResponse(response);
     const result = (await response.json()) as Record<string, unknown>;
     if (result.usage && typeof result.usage === "object") {
-      this.receipt.usage = Object.fromEntries(
-        Object.entries(result.usage).filter(
-          ([key, value]) =>
-            [
-              "input_tokens",
-              "output_tokens",
-              "total_tokens",
-              "seconds",
-            ].includes(key) &&
-            typeof value === "number" &&
-            Number.isFinite(value) &&
-            value >= 0,
-        ),
-      ) as Record<string, number>;
-      if (bound)
-        this.receipt.meteredCost = meteredCostEstimate(
-          bound,
-          this.receipt.usage,
-        );
+      this.receipt.usage = sanitizedProviderUsage(result.usage);
+      const kind = path.startsWith("images/")
+        ? "image"
+        : path.startsWith("audio/")
+          ? "audio"
+          : "text";
+      const model =
+        kind === "image"
+          ? this.config.imageModel
+          : kind === "audio"
+            ? this.config.audioModel
+            : this.config.textModel;
+      this.receipt.meteredCost = meteredCostEstimate(
+        bound ??
+          estimate ?? {
+            model,
+            kind,
+            rateCardVersion: REQUEST_RATE_CARD.version,
+          },
+        this.receipt.usage,
+      );
     }
     return result;
   }
@@ -313,8 +449,17 @@ export class OpenAIProvider implements Provider {
     );
     form.append("model", this.config.audioModel);
     form.append("response_format", "json");
-    const result = await this.post("audio/transcriptions", form, () =>
-      audioRequestCost(this.config.audioModel, bytes.length),
+    const result = await this.post(
+      "audio/transcriptions",
+      form,
+      () => audioRequestCost(this.config.audioModel, bytes.length),
+      (policy, policyHash) =>
+        estimatedAudioRequestCost(
+          this.config.audioModel,
+          bytes.length,
+          policy,
+          policyHash,
+        ),
     );
     // A short clarification ("My dad.") is a valid interview answer.
     // Narrative sufficiency belongs to the story workflow, not transcription.
@@ -357,16 +502,21 @@ export class OpenAIProvider implements Provider {
         },
       },
     };
-    const result = await this.post("responses", body, () =>
-      structuredRequestCost({
-        model: body.model,
-        serviceTier: body.service_tier,
-        maxOutputTokens: body.max_output_tokens,
-        serializedText: JSON.stringify(body, (key, value) =>
-          key === "image_url" ? "" : value,
-        ),
-        highDetailImageCount: images.length,
-      }),
+    const costInput = {
+      model: body.model,
+      serviceTier: body.service_tier,
+      maxOutputTokens: body.max_output_tokens,
+      serializedText: JSON.stringify(body, (key, value) =>
+        key === "image_url" ? "" : value,
+      ),
+      highDetailImageCount: images.length,
+    };
+    const result = await this.post(
+      "responses",
+      body,
+      () => structuredRequestCost(costInput),
+      (policy, policyHash) =>
+        estimatedStructuredRequestCost(costInput, policy, policyHash),
     );
     if (result.status !== "completed")
       throw new Error("Incomplete editorial response");
@@ -428,12 +578,32 @@ export class OpenAIProvider implements Provider {
           new Blob([new Uint8Array(bytes)], { type: "image/png" }),
           `reference-${index + 1}.png`,
         );
-      result = await this.post("images/edits", form, () =>
-        imageRequestCost(specification, prompt, references.length),
+      result = await this.post(
+        "images/edits",
+        form,
+        () => imageRequestCost(specification, prompt, references.length),
+        (policy, policyHash) =>
+          estimatedImageRequestCost(
+            specification,
+            prompt,
+            references.length,
+            policy,
+            policyHash,
+          ),
       );
     } else
-      result = await this.post("images/generations", params, () =>
-        imageRequestCost(specification, prompt, 0),
+      result = await this.post(
+        "images/generations",
+        params,
+        () => imageRequestCost(specification, prompt, 0),
+        (policy, policyHash) =>
+          estimatedImageRequestCost(
+            specification,
+            prompt,
+            0,
+            policy,
+            policyHash,
+          ),
       );
     const output = z
       .object({

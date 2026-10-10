@@ -1,4 +1,5 @@
 import { isRecoveryLocked } from "../recovery-lock.js";
+import { pilotFamilyReadiness } from "../pilot/integration.js";
 import { assertSupportedCostPlan } from "./request-cost.js";
 import { legacyImageRender } from "../../shared/imageRender.js";
 import {
@@ -225,6 +226,13 @@ export function familySetupView(
   ownerId: string,
   config: EngineConfig,
 ): StudioSetupView {
+  const pilot = pilotFamilyReadiness(store, ownerId, config);
+  if (pilot) return {
+    ...pilot, canManage: false, hasKey: false,
+    budgetUsd: 0, audioReserveUsd: 0, textReserveUsd: 0, imageReserveUsd: 0,
+    cycleReserveUsd: 0, usedReserveUsd: 0,
+    message: pilot.canStart ? "Your invited digital book is free. Everlore takes care of creating it." : "Your memories are safe. Book creation is not available right now.",
+  };
   const view = setupView(store, ownerId, config);
   let ready =
     view.ready &&

@@ -25,6 +25,7 @@ export interface StudioCheckpoint {
 }
 
 export function ensureStudioBudgetRecords(store: Store) {
+  store.run("CREATE TABLE IF NOT EXISTS studio_request_estimates(callId TEXT PRIMARY KEY REFERENCES studio_calls(id) ON DELETE CASCADE,body TEXT NOT NULL)");
   store.run(
     "CREATE TABLE IF NOT EXISTS studio_request_bounds(callId TEXT PRIMARY KEY REFERENCES studio_calls(id) ON DELETE CASCADE,body TEXT NOT NULL)",
   );

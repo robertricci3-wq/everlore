@@ -42,6 +42,8 @@ import {
   type SessionRow,
 } from "./service.js";
 import { queueInterviewTranscription } from "./transcription.js";
+import { bindPilotCreation, pilotAccess, pilotCreationFunding } from "../pilot/service.js";
+import { pilotConnectionReady } from "../pilot/integration.js";
 
 const FREEFORM_PAGE = "freeform-memory";
 const FREEFORM_INVITATION: MemoryInvitationRecord = {
@@ -112,6 +114,11 @@ function recordConsent(
   );
 }
 function available(s: Store, ownerId: string, config: EngineConfig) {
+  if (config.pilotCreationId) {
+    const funding = pilotCreationFunding(s, config.pilotCreationId);
+    const access = pilotAccess(s, ownerId);
+    return !!funding && funding.ownerId === ownerId && funding.campaign.state === "active" && !!access && access.remainingCents > 0 && pilotConnectionReady(s, config);
+  }
   return familySetupView(s, ownerId, config).canStart;
 }
 export function journeySetup(
@@ -465,6 +472,7 @@ export function createJourney(
       at,
       at,
     );
+    bindPilotCreation(s, ownerId, creationId);
     s.run(
       "INSERT INTO almanac_creation_keys VALUES(?,?,?,?)",
       ownerId,
@@ -513,6 +521,9 @@ export function journeyView(
   let bookReady = false;
   const cancelled = cancelledCreation(request);
   if (request && !cancelled) {
+    const progressConfig = pilotCreationFunding(s, request.id)
+      ? { ...config, pilotCreationId: request.id }
+      : config;
     const job = request.studioJobId
       ? s.one<{ status: string }>(
           "SELECT status FROM studio_jobs WHERE id=?",
@@ -536,7 +547,7 @@ export function journeyView(
     } else if (
       request.status === "paused" ||
       !familySetupView(s, ownerId, config).ready ||
-      (!available(s, ownerId, config) && !job)
+      (!available(s, ownerId, progressConfig) && !job)
     ) {
       status = "paused";
       message = pausedMessage(request.pauseReason);
@@ -572,6 +583,7 @@ export function journeyView(
 export function advanceCreationRequest(
   s: Store,
   config: EngineConfig,
+  options: { creationId?: string } = {},
 ): boolean {
   if (isRecoveryLocked(s)) return false;
   // A deleted book is a cancelled request, never permission to rebuild it.
@@ -583,8 +595,9 @@ export function advanceCreationRequest(
   const token = id(),
     request = s.transaction(() => {
       const found = s.one<CreationRow>(
-        "SELECT * FROM almanac_creation_requests WHERE status NOT IN ('ready','cancelled') AND leaseUntil<? ORDER BY lastAttemptAt,rowid LIMIT 1",
+        `SELECT * FROM almanac_creation_requests WHERE status NOT IN ('ready','cancelled') AND leaseUntil<? AND ${options.creationId ? "id=?" : "NOT EXISTS(SELECT 1 FROM pilot_creations WHERE creationId=almanac_creation_requests.id)"} ORDER BY lastAttemptAt,rowid LIMIT 1`,
         Date.now(),
+        ...(options.creationId ? [options.creationId] : []),
       );
       if (found)
         s.run(

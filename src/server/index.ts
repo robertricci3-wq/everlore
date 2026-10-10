@@ -1,3 +1,4 @@
+import { runPilotTick } from "./pilot/integration.js";
 import { fulfillOne, pollShippingOne } from "./commerce/service.js";
 import { startWorkerLanes } from "./worker-lanes.js";
 import { isRecoveryLocked } from "./recovery-lock.js";
@@ -48,14 +49,16 @@ if (process.env.NODE_ENV === "production") {
 }
 const workers = startWorkerLanes([
   { name: "creative", run: async () => {
+    if (process.env.DISABLE_WORKER === "1") return;
     loadStudioConnection(store, studioConfig);
     advanceCreationRequest(store, studioConfig);
     if (!(await runOneJob(store)) && !(await runEngine(store, provider, studioConfig)) && !(await runInterviewTranscription(store, provider, studioConfig)))
       await runStudio(store, provider, studioConfig);
   } },
-  { name: "fulfillment", run: () => fulfillOne(store, commerceConfig(store.dir)) },
-  { name: "shipping", run: () => pollShippingOne(store, commerceConfig(store.dir)) },
-], { disabled: () => process.env.DISABLE_WORKER === "1" || isRecoveryLocked(store), onError: name => console.error(`worker_${name}_failed`) });
+  { name: "pilot", run: async () => { loadStudioConnection(store, studioConfig); return runPilotTick(store, studioConfig); } },
+  { name: "fulfillment", run: () => process.env.DISABLE_WORKER === "1" ? Promise.resolve(false) : fulfillOne(store, commerceConfig(store.dir)) },
+  { name: "shipping", run: () => process.env.DISABLE_WORKER === "1" ? Promise.resolve(false) : pollShippingOne(store, commerceConfig(store.dir)) },
+], { disabled: () => isRecoveryLocked(store), onError: name => console.error(`worker_${name}_failed`) });
 app.locals.workerHealth = workers.status;
 server.listen(config.PORT, publicOrigin() ? "0.0.0.0" : "127.0.0.1", () =>
   console.log(

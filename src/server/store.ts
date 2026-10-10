@@ -17,6 +17,8 @@ import { migrateLab } from "./lab/schema.js";
 import { migrateContinuity } from "./engine/continuity-schema.js";
 import { forgetProjectContinuity } from "./engine/continuity.js";
 import { migrateAlmanac } from "./almanac/schema.js";
+import { migrateFeedback } from "./feedback.js";
+import { migratePilot } from "./pilot/schema.js";
 
 export function hash(value: string | Uint8Array) {
   return createHash("sha256").update(value).digest("hex");
@@ -75,6 +77,8 @@ export class Store {
     migrateLab(this.db);
     migrateAlmanac(this.db);
     migrateContinuity(this.db);
+    migrateFeedback(this.db);
+    migratePilot(this.db);
   }
   one<T>(sql: string, ...params: SQLInputValue[]) {
     return this.db.prepare(sql).get(...params) as T | undefined;

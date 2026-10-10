@@ -12,6 +12,8 @@ import { z } from "zod";
 import { id, now, type Store, type ProjectRow } from "../store.js";
 import { EngineError } from "./pipeline.js";
 import { availability, type EngineConfig } from "./provider.js";
+import { pilotAccess, pilotJobFunding } from "../pilot/service.js";
+import { pilotConnectionReady } from "../pilot/integration.js";
 import {
   providerFailureMessage,
   type ProviderFailure,
@@ -24,6 +26,7 @@ export function studioRecovery(store: Store, jobId: string) {
   );
   if (!job || !["needs_attention", "needs_editor"].includes(job.status))
     return null;
+  const pilot = pilotJobFunding(store, jobId);
   const checkpoint = pendingStudioCheckpoint(store, jobId, job.stage);
   if (checkpoint) {
     const pending = store.one<{ state: string; inputHash: string }>(
@@ -33,7 +36,9 @@ export function studioRecovery(store: Store, jobId: string) {
     );
     // A pause marker can never make an un-reconciled paid attempt retryable.
     const unsafe = store.one(
-      "SELECT c.id FROM studio_calls c WHERE c.jobId=? AND c.stage=? AND c.status!='rejected' AND NOT EXISTS(SELECT 1 FROM studio_recoveries r WHERE r.callId=c.id) LIMIT 1",
+      `SELECT c.id FROM studio_calls c WHERE c.jobId=? AND c.stage=? AND c.status!='rejected' AND ${pilot
+        ? "NOT EXISTS(SELECT 1 FROM pilot_attempts a WHERE a.id=c.id AND a.jobId=c.jobId AND a.status='not_processed')"
+        : "NOT EXISTS(SELECT 1 FROM studio_recoveries r WHERE r.callId=c.id)"} LIMIT 1`,
       jobId,
       job.stage,
     );
@@ -42,7 +47,7 @@ export function studioRecovery(store: Store, jobId: string) {
       pending?.state !== "completed" &&
       (!pending || pending.inputHash === checkpoint.inputHash)
     ) {
-      reservedBudget(store);
+      if (!pilot) reservedBudget(store);
       const held =
         store.one<{ allowance: number }>(
           "SELECT allowance FROM engine_budget WHERE runId=?",
@@ -59,8 +64,8 @@ export function studioRecovery(store: Store, jobId: string) {
         stage: checkpoint.stage,
         requestId: null,
         uncertain: false,
-        extraReserveUsd: Math.max(0, ceiling - job.allowance) / 100,
-        resumeReserveUsd: Math.max(0, ceiling - held) / 100,
+        extraReserveUsd: pilot ? 0 : Math.max(0, ceiling - job.allowance) / 100,
+        resumeReserveUsd: pilot ? 0 : Math.max(0, ceiling - held) / 100,
         message: checkpoint.message,
       };
     }
@@ -261,8 +266,10 @@ export function studioRecovery(store: Store, jobId: string) {
     ? (JSON.parse(attempt.details) as ProviderFailure)
     : null;
   const uncertain =
-    !localRepair && (attempt.status !== "rejected" || !failure?.retrySafe);
-  reservedBudget(store);
+    !localRepair && (pilot
+      ? !store.one("SELECT id FROM pilot_attempts WHERE id=? AND jobId=? AND status='not_processed'", attempt.id, jobId)
+      : attempt.status !== "rejected" || !failure?.retrySafe);
+  if (!pilot) reservedBudget(store);
   const held =
     store.one<{ allowance: number }>(
       "SELECT allowance FROM engine_budget WHERE runId=?",
@@ -282,7 +289,7 @@ export function studioRecovery(store: Store, jobId: string) {
     artReviewCopyRepair,
     artEvidenceRepair,
     artMeaningRepair,
-    resumeReserveUsd:
+    resumeReserveUsd: pilot ? 0 :
       Math.max(
         0,
         job.allowance + (uncertain ? attempt.estimatedCents : 0) - held,
@@ -293,7 +300,7 @@ export function studioRecovery(store: Store, jobId: string) {
     stage: attempt.stage,
     requestId: attempt.requestId,
     uncertain,
-    extraReserveUsd: uncertain ? attempt.estimatedCents / 100 : 0,
+    extraReserveUsd: !pilot && uncertain ? attempt.estimatedCents / 100 : 0,
     message: artRequirementsRepair
       ? "Saved reference images can be inspected against the correct model-sheet requirements. Earlier attempts remain saved; the correction limit is unchanged."
       : reviewCopyReady
@@ -325,7 +332,7 @@ export function resumeStudio(
     .parse(input);
   return store.transaction(() => {
     const job = store.one<{ id: string; status: string; baseRevision: number }>(
-      "SELECT id,status,baseRevision FROM studio_jobs WHERE id=? AND projectId=? AND NOT EXISTS(SELECT 1 FROM lab_runs WHERE lab_runs.jobId=studio_jobs.id)",
+      "SELECT id,status,baseRevision FROM studio_jobs WHERE id=? AND projectId=? AND kind!='interview_transcription' AND NOT EXISTS(SELECT 1 FROM lab_runs WHERE lab_runs.jobId=studio_jobs.id)",
       body.jobId,
       project.id,
     );
@@ -354,18 +361,29 @@ export function resumeStudio(
       throw new EngineError(
         "The saved attempt changed. Reload before resuming.",
       );
-    if (!availability(config).ready)
+    const pilot = pilotJobFunding(store, job.id);
+    if (pilot) {
+      if (!pilotConnectionReady(store, config) || pilot.campaign.state !== "active" ||
+        (pilotAccess(store, pilot.ownerId)?.remainingCents ?? 0) <= 0)
+        throw new EngineError("This feedback pilot is paused. Its saved work can resume when the authorized service is available.");
+      // A user's acknowledgement is not evidence that an uncertain paid call
+      // was never processed. Keep both original receipts and settlement history.
+      if (!recovery.localRepair && (recovery.uncertain || store.one(
+        "SELECT id FROM pilot_attempts WHERE jobId=? AND stage=? AND status!='not_processed' LIMIT 1",
+        job.id, recovery.stage,
+      ))) throw new EngineError("Reconcile the saved pilot request as not processed before retrying. A possible-charge acknowledgement cannot authorize a duplicate request.");
+    } else if (!availability(config).ready)
       throw new EngineError(availability(config).message);
-    if (recovery.uncertain && !body.acknowledgePossibleCharge)
+    if (!pilot && recovery.uncertain && !body.acknowledgePossibleCharge)
       throw new EngineError(
         "Confirm the possible earlier charge before explicitly retrying this attempt.",
       );
     const extra = Math.round(recovery.extraReserveUsd * 100);
-    const used = reservedBudget(store);
+    const used = pilot ? 0 : reservedBudget(store);
     const remaining = Math.round(recovery.resumeReserveUsd * 100);
-    if (remaining > 0)
+    if (!pilot && remaining > 0)
       requireAllocationIncrease(store, job.id, remaining, config);
-    if (used + remaining > config.budgetCents)
+    if (!pilot && used + remaining > config.budgetCents)
       throw new EngineError(
         `This retry needs $${(remaining / 100).toFixed(2)} more reserved allowance for its remaining work. Update your total allowance before resuming.`,
       );
@@ -408,7 +426,7 @@ export function resumeStudio(
       extra,
       job.id,
     );
-    store.run(
+    if (!pilot) store.run(
       "UPDATE engine_budget SET allowance=(SELECT allowance FROM studio_jobs WHERE id=?) WHERE runId=?",
       job.id,
       job.id,

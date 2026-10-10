@@ -106,6 +106,8 @@ import {
   inheritedContinuityBindings,
 } from "./continuity.js";
 export { pinStudioContinuity } from "./continuity.js";
+import { pilotCreationFunding, pilotJobFunding, linkPilotJob, reservePilotRequest, markPilotDispatched, settlePilotRequest } from "../pilot/service.js";
+import type { EstimatedRequestReservation } from "./request-cost.js";
 
 interface State {
   continuity?: ContinuityState;
@@ -230,9 +232,11 @@ function insertJob(
 ) {
   if (!availability(config).ready)
     throw new EngineError(availability(config).message);
-  const allowance = studioAllowance(config),
+  const pilot = config.pilotCreationId ? pilotCreationFunding(store, config.pilotCreationId) : null;
+  if (config.pilotCreationId && !pilot) throw new EngineError("This pilot book has no authorized creation request.");
+  const allowance = pilot ? 0 : studioAllowance(config),
     used = reservedBudget(store);
-  if (used + allowance > config.budgetCents)
+  if (!pilot && used + allowance > config.budgetCents)
     throw new EngineError(
       "The approved allowance does not cover this bounded story and art cycle. Your work is saved.",
     );
@@ -241,7 +245,7 @@ function insertJob(
   request.autonomous ??= request.seed?.automation !== "guided";
   request.strictCostGuard = config.strictCostGuard === true;
   const jobId = id();
-  allocateGeneration(
+  if (!pilot) allocateGeneration(
     store,
     project.ownerId,
     jobId,
@@ -249,7 +253,7 @@ function insertJob(
     config,
     kind === "generation",
   );
-  store.run("INSERT INTO engine_budget VALUES(?,?,?)", jobId, allowance, now());
+  if (!pilot) store.run("INSERT INTO engine_budget VALUES(?,?,?)", jobId, allowance, now());
   store.run(
     "INSERT INTO studio_jobs(id,projectId,baseRevision,kind,status,stage,request,state,profile,allowance,createdAt) VALUES(?,?,?,?,'queued','source',?,?,?,?,?)",
     jobId,
@@ -262,6 +266,7 @@ function insertJob(
     allowance,
     now(),
   );
+  if (pilot) linkPilotJob(store, project.ownerId, config.pilotCreationId!, jobId);
   store.run(
     "UPDATE projects SET status='creating_legacy' WHERE id=?",
     project.id,
@@ -970,7 +975,7 @@ export async function runStudio(
   const token = id(),
     job = store.transaction(() => {
       const row = store.one<StudioJob>(
-        `SELECT * FROM studio_jobs WHERE kind!='interview_transcription' AND (status='queued' OR (status='running' AND leaseUntil<?)) AND ${options.jobId ? "id=?" : "NOT EXISTS(SELECT 1 FROM lab_runs WHERE lab_runs.jobId=studio_jobs.id)"} ORDER BY rowid LIMIT 1`,
+        `SELECT * FROM studio_jobs WHERE kind!='interview_transcription' AND (status='queued' OR (status='running' AND leaseUntil<?)) AND ${options.jobId ? "id=?" : "NOT EXISTS(SELECT 1 FROM lab_runs WHERE lab_runs.jobId=studio_jobs.id) AND NOT EXISTS(SELECT 1 FROM pilot_jobs WHERE jobId=studio_jobs.id)"} ORDER BY rowid LIMIT 1`,
         Date.now(),
         ...(options.jobId ? [options.jobId] : []),
       );
@@ -984,10 +989,11 @@ export async function runStudio(
       return row;
     });
   if (!job) return false;
+  const pilotFunding = pilotJobFunding(store, job.id);
   const request: RequestData = JSON.parse(job.request),
     state: State = JSON.parse(job.state);
   // A strict job must stay strict if it is resumed under a later server config.
-  if (config.strictCostGuard && !request.lab && !request.strictCostGuard) {
+  if (config.strictCostGuard && !pilotFunding && !request.lab && !request.strictCostGuard) {
     request.strictCostGuard = true;
     store.run(
       "UPDATE studio_jobs SET request=? WHERE id=?",
@@ -995,7 +1001,7 @@ export async function runStudio(
       job.id,
     );
   }
-  const strictCosts = !request.lab && request.strictCostGuard === true;
+  const strictCosts = !pilotFunding && !request.lab && request.strictCostGuard === true;
   const profile = request.engineProfile
     ? verifyProfile(request.engineProfile)
     : null;
@@ -1051,6 +1057,12 @@ export async function runStudio(
     );
   };
   let reserveActiveRequest: ((bound: RequestCostBound) => void) | undefined;
+  let reserveEstimatedRequest: ((estimate: EstimatedRequestReservation) => void) | undefined;
+  if (pilotFunding && provider.withEstimatedPolicy)
+    provider = provider.withEstimatedPolicy(pilotFunding.campaign.policy.requestPolicy, pilotFunding.campaign.policyHash, (estimate) => {
+      if (!reserveEstimatedRequest) throw new StudioPreDispatchPause("This pilot request has no durable stage.");
+      reserveEstimatedRequest(estimate);
+    });
   const guardedProvider = strictCosts && !!provider.withRequestGuard;
   if (guardedProvider)
     provider = provider.withRequestGuard!((bound) => {
@@ -1098,6 +1110,7 @@ export async function runStudio(
     let dispatched = false,
       status = "ambiguous_failure";
     const previousGuard = reserveActiveRequest;
+    const previousEstimateGuard = reserveEstimatedRequest;
     const checkContinue = () => {
       if (!owns()) throw new EngineError("This studio job changed.");
       if (options.shouldContinue && !options.shouldContinue()) {
@@ -1113,7 +1126,7 @@ export async function runStudio(
           "pause",
         );
     };
-    const reserve = (cents: number, bound?: RequestCostBound) => {
+    const reserve = (cents: number, bound?: RequestCostBound, forecast?: EstimatedRequestReservation) => {
       if (dispatched)
         throw new EngineError(
           "A stage attempted more than one paid request. Reconcile the saved attempt.",
@@ -1128,15 +1141,22 @@ export async function runStudio(
           "The next request has no valid conservative cost bound.",
         );
       store.transaction(() => {
+        if (pilotFunding && kind !== "local") {
+          if (!forecast) throw new StudioPreDispatchPause("The pilot request has no pinned cost estimate.");
+          const reservation = reservePilotRequest(store, { jobId: job.id, attemptId: callId, stage: name, inputHash, reservation: forecast });
+          if (!reservation.isNew) throw new StudioPreDispatchPause("This pilot attempt is already recorded; reconcile it before retrying.");
+          markPilotDispatched(store, callId);
+        }
         const used = store.one<{ total: number }>(
           "SELECT COALESCE(SUM(estimatedCents),0) AS total FROM studio_calls WHERE jobId=? AND status!='rejected'",
           job.id,
         )!.total;
-        const increase = Math.max(0, used + cents - job.allowance);
+        const increase = pilotFunding ? 0 : Math.max(0, used + cents - job.allowance);
         const totalHeld = !request.lab ? reservedBudget(store) : 0;
         if (
           (kind !== "local" &&
             !request.lab &&
+            !pilotFunding &&
             totalHeld + increase > config.budgetCents) ||
           (increase > 0 && (!request.autonomous || request.lab))
         )
@@ -1217,13 +1237,17 @@ export async function runStudio(
               callId,
               JSON.stringify(bound),
             );
+          if (forecast) store.run("INSERT INTO studio_request_estimates VALUES(?,?)", callId, canonical(forecast));
         }
       });
       if (kind !== "local" && !request.lab) dispatched = true;
     };
     try {
       checkContinue();
-      if (kind !== "local" && strictCosts) {
+      if (kind !== "local" && pilotFunding) {
+        if (!provider.withEstimatedPolicy) throw new StudioPreDispatchPause("This provider cannot account for pilot requests.");
+        reserveEstimatedRequest = (forecast) => { checkContinue(); reserve(forecast.reservationCents, undefined, forecast); };
+      } else if (kind !== "local" && strictCosts) {
         if (!guardedProvider || !provider.validateRequestCosts)
           throw new StudioPreDispatchPause(
             "This provider cannot verify conservative request costs. No request was sent.",
@@ -1234,7 +1258,7 @@ export async function runStudio(
       } else reserve(estimate);
       const result = await fn();
       if (!owns()) throw new EngineError("This studio job changed.");
-      if (strictCosts && kind !== "local" && !dispatched)
+      if ((strictCosts || pilotFunding) && kind !== "local" && !dispatched)
         throw new StudioPreDispatchPause(
           "The provider returned without a verified request reservation.",
         );
@@ -1289,8 +1313,15 @@ export async function runStudio(
       throw error;
     } finally {
       reserveActiveRequest = previousGuard;
+      reserveEstimatedRequest = previousEstimateGuard;
       if (dispatched) {
         const receipt = provider.takeReceipt?.();
+        if (pilotFunding) settlePilotRequest(store, callId, {
+          outcome: status === "rejected" ? "not_processed" : status === "completed" ? "completed" : "ambiguous",
+          evidenceKind: status === "rejected" ? "provider_rejection" : status === "completed" && receipt?.meteredCost ? "provider_usage" : "unknown_outcome",
+          ...(status === "completed" && receipt?.meteredCost ? { usageEstimatedCents: receipt.meteredCost.estimatedCostCents } : {}),
+          evidenceHash: hash(canonical(receipt ?? { outcome: status })),
+        });
         if (receipt?.imageRender)
           store.run(
             "INSERT OR IGNORE INTO studio_image_renders VALUES(?,?)",

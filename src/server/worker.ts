@@ -1,3 +1,4 @@
+import { runPilotTick } from "./pilot/integration.js";
 import { Store } from "./store.js";
 import { runOneJob } from "./pipeline.js";
 import { engineConfig, OpenAIProvider } from "./engine/provider.js";
@@ -18,14 +19,16 @@ migrateCommerce(store);
 recoverInterruptedCommerce(store);
 const workers = startWorkerLanes([
   { name: "creative", run: async () => {
+    if (process.env.DISABLE_WORKER === "1") return;
     loadStudioConnection(store, config);
     advanceCreationRequest(store, config);
     if (!(await runOneJob(store)) && !(await runEngine(store, provider, config)) && !(await runInterviewTranscription(store, provider, config)))
       await runStudio(store, provider, config);
   } },
-  { name: "fulfillment", run: () => fulfillOne(store, commerceConfig(store.dir)) },
-  { name: "shipping", run: () => pollShippingOne(store, commerceConfig(store.dir)) },
-], { disabled: () => process.env.DISABLE_WORKER === "1" || isRecoveryLocked(store), onError: name => console.error(`worker_${name}_failed`) });
+  { name: "pilot", run: async () => { loadStudioConnection(store, config); return runPilotTick(store, config); } },
+  { name: "fulfillment", run: () => process.env.DISABLE_WORKER === "1" ? Promise.resolve(false) : fulfillOne(store, commerceConfig(store.dir)) },
+  { name: "shipping", run: () => process.env.DISABLE_WORKER === "1" ? Promise.resolve(false) : pollShippingOne(store, commerceConfig(store.dir)) },
+], { disabled: () => isRecoveryLocked(store), onError: name => console.error(`worker_${name}_failed`) });
 let closing = false;
 const close = async () => {
   if (closing) return;

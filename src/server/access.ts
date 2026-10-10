@@ -5,6 +5,7 @@ import { reservedBudget } from "./engine/budget.js";
 import type { EngineConfig } from "./engine/provider.js";
 import { Credentials } from "../shared/contracts.js";
 import { studioReservation } from "../shared/studioSetup.js";
+import { redeemPilotInvitation } from "./pilot/service.js";
 
 export class AccessError extends Error {
   constructor(
@@ -185,6 +186,7 @@ export function redeemInvitation(store: Store, code: unknown, ownerId: string) {
       503,
       "The private pilot is not accepting invitations yet.",
     );
+  if (redeemPilotInvitation(store, code, ownerId)) return;
   const invite =
     typeof code === "string"
       ? store.one<{ id: string; bookCount: number; creditCents: number }>(

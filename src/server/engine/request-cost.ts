@@ -2,14 +2,15 @@ import {
   ImageRenderSpec,
   type ImageRenderSpecification,
 } from "../../shared/imageRender.js";
+import { z } from "zod";
 
 /** Rates are for synchronous, global-endpoint, default-tier requests, not Batch.
- * Reviewed 2026-10-08 against the official model pages, images-vision guide,
+ * Reviewed 2026-10-10 against the official model pages, images-vision guide,
  * pricing page and image-generation output calculator. This is a reservation
  * model, never a representation of an account balance or provider billing cap.
  */
 export const REQUEST_RATE_CARD = {
-  version: "openai-global-default-2026-10-08-v1",
+  version: "openai-global-default-2026-10-10-v2",
   sources: [
     "https://developers.openai.com/api/docs/models/gpt-5.4",
     "https://developers.openai.com/api/docs/models/gpt-4o-transcribe",
@@ -21,8 +22,39 @@ export const REQUEST_RATE_CARD = {
   textInputUsdPerMillion: 2.5,
   textOutputUsdPerMillion: 15,
   imageTextInputUsdPerMillion: 5,
+  imageInputUsdPerMillion: 8,
   imageOutputUsdPerMillion: 30,
 } as const;
+
+// These are explicit pilot assumptions, not a published input-token formula or
+// provider billing ceiling. There are no defaults and no environment opt-in.
+const EstimatedPolicySchema = z
+  .object({
+    version: z.literal(1),
+    mode: z.literal("estimated_pilot"),
+    textInputTokensPerByte: z.number().min(1).max(8),
+    imageInputTokensPerReference: z.number().int().positive().max(1000000),
+    imagePromptTokensPerByte: z.number().min(1).max(8),
+    imageInputOverheadTokens: z.number().int().nonnegative().max(1000000),
+    safetyMultiplier: z.number().min(1).max(10),
+  })
+  .strict();
+export type EstimatedRequestPolicy = z.infer<typeof EstimatedPolicySchema>;
+export function parseEstimatedRequestPolicy(
+  input: unknown,
+): EstimatedRequestPolicy {
+  return EstimatedPolicySchema.parse(input);
+}
+export interface EstimatedRequestReservation {
+  version: 1;
+  costConfidence: "estimate";
+  policyHash: string;
+  rateCardVersion: string;
+  model: string;
+  kind: "text" | "image" | "audio";
+  reservationCents: number;
+  evidence: Record<string, number>;
+}
 
 export interface RequestCostBound {
   version: 1;
@@ -89,6 +121,29 @@ function finish(
   };
 }
 
+function estimatedReservation(
+  policy: EstimatedRequestPolicy,
+  policyHash: string,
+  model: string,
+  kind: EstimatedRequestReservation["kind"],
+  usd: number,
+  evidence: Record<string, number>,
+): EstimatedRequestReservation {
+  parseEstimatedRequestPolicy(policy);
+  if (!/^[a-f0-9]{64}$/.test(policyHash)) rejectSettings();
+  const amount = finish(model, kind, usd * policy.safetyMultiplier, evidence);
+  return {
+    version: 1,
+    costConfidence: "estimate",
+    policyHash,
+    rateCardVersion: REQUEST_RATE_CARD.version,
+    model,
+    kind,
+    reservationCents: Math.max(1, amount.maxCostCents),
+    evidence: { ...evidence, safetyMultiplier: policy.safetyMultiplier },
+  };
+}
+
 export interface StructuredCostInput {
   model: string;
   serviceTier: string;
@@ -147,6 +202,50 @@ export function structuredRequestCost(
   );
 }
 
+export function estimatedStructuredRequestCost(
+  input: StructuredCostInput,
+  policy: EstimatedRequestPolicy,
+  policyHash: string,
+): EstimatedRequestReservation {
+  // Preserve supported-model/settings/context validation. Only this separately
+  // selected pilot policy substitutes an estimate for the full-context reserve.
+  structuredRequestCost(input);
+  parseEstimatedRequestPolicy(policy);
+  const textBytes = Buffer.byteLength(input.serializedText, "utf8");
+  const visionTokens = input.highDetailImageCount * 3001;
+  const estimatedInputTokens =
+    Math.ceil(textBytes * policy.textInputTokensPerByte) + visionTokens;
+  if (estimatedInputTokens + input.maxOutputTokens > 1050000)
+    throw new RequestCostBoundError(
+      "input_too_large",
+      "This request exceeds the pilot policy's supported context size. Nothing was sent to OpenAI.",
+    );
+  const longContext = estimatedInputTokens > 272000;
+  const inputRate =
+    REQUEST_RATE_CARD.textInputUsdPerMillion * (longContext ? 2 : 1);
+  const outputRate =
+    REQUEST_RATE_CARD.textOutputUsdPerMillion * (longContext ? 1.5 : 1);
+  return estimatedReservation(
+    policy,
+    policyHash,
+    input.model,
+    "text",
+    (estimatedInputTokens * inputRate + input.maxOutputTokens * outputRate) /
+      1e6,
+    {
+      textBytes,
+      highDetailImageCount: input.highDetailImageCount,
+      visionTokens,
+      estimatedInputTokens,
+      maxOutputTokens: input.maxOutputTokens,
+      inputUsdPerMillion: inputRate,
+      outputUsdPerMillion: outputRate,
+      longContextPremium: Number(longContext),
+      textInputTokensPerByte: policy.textInputTokensPerByte,
+    },
+  );
+}
+
 /** Exact output-token formula published by the official output calculator.
  * This does NOT estimate input-image tokens, for which Image2 has no published
  * rule in that calculator. In particular, Image1 tile rules must not be reused.
@@ -187,6 +286,55 @@ export function imageRequestCost(
   );
 }
 
+export function estimatedImageRequestCost(
+  spec: ImageRenderSpecification,
+  prompt: string,
+  referenceCount: number,
+  policy: EstimatedRequestPolicy,
+  policyHash: string,
+): EstimatedRequestReservation {
+  const outputTokens = imageOutputTokens(spec);
+  parseEstimatedRequestPolicy(policy);
+  const promptBytes = Buffer.byteLength(prompt, "utf8");
+  if (
+    !promptBytes ||
+    promptBytes > 128000 ||
+    !Number.isSafeInteger(referenceCount) ||
+    referenceCount < 0
+  )
+    rejectSettings();
+  const estimatedTextInputTokens =
+    Math.ceil(promptBytes * policy.imagePromptTokensPerByte) +
+    policy.imageInputOverheadTokens;
+  const estimatedImageInputTokens =
+    referenceCount * policy.imageInputTokensPerReference;
+  return estimatedReservation(
+    policy,
+    policyHash,
+    spec.model,
+    "image",
+    (estimatedTextInputTokens * REQUEST_RATE_CARD.imageTextInputUsdPerMillion +
+      estimatedImageInputTokens * REQUEST_RATE_CARD.imageInputUsdPerMillion +
+      outputTokens * REQUEST_RATE_CARD.imageOutputUsdPerMillion) /
+      1e6,
+    {
+      promptBytes,
+      referenceCount,
+      width: spec.width,
+      height: spec.height,
+      estimatedTextInputTokens,
+      estimatedImageInputTokens,
+      outputTokens,
+      imageInputTokensPerReference: policy.imageInputTokensPerReference,
+      imageInputOverheadTokens: policy.imageInputOverheadTokens,
+      imagePromptTokensPerByte: policy.imagePromptTokensPerByte,
+      textInputUsdPerMillion: REQUEST_RATE_CARD.imageTextInputUsdPerMillion,
+      imageInputUsdPerMillion: REQUEST_RATE_CARD.imageInputUsdPerMillion,
+      outputUsdPerMillion: REQUEST_RATE_CARD.imageOutputUsdPerMillion,
+    },
+  );
+}
+
 export function audioRequestCost(
   model: string,
   byteLength: number,
@@ -213,6 +361,23 @@ export function audioRequestCost(
   });
 }
 
+export function estimatedAudioRequestCost(
+  model: string,
+  byteLength: number,
+  policy: EstimatedRequestPolicy,
+  policyHash: string,
+): EstimatedRequestReservation {
+  const bound = audioRequestCost(model, byteLength);
+  return estimatedReservation(
+    policy,
+    policyHash,
+    model,
+    "audio",
+    bound.maxCostCents / 100,
+    { ...bound.evidence, usesVerifiedAudioReservation: 1 },
+  );
+}
+
 export function assertSupportedCostPlan(
   models: { text: string; image: string; audio: string },
   spec: ImageRenderSpecification,
@@ -233,7 +398,7 @@ export function assertSupportedCostPlan(
  * Missing or unfamiliar usage is left unknown instead of priced as zero.
  */
 export function meteredCostEstimate(
-  bound: RequestCostBound,
+  bound: Pick<RequestCostBound, "model" | "kind" | "rateCardVersion">,
   usage: Record<string, number> | null,
 ): MeteredCostEstimate | null {
   if (!usage) return null;
@@ -242,7 +407,7 @@ export function meteredCostEstimate(
   if (![input, output].every((n) => Number.isSafeInteger(n) && n >= 0))
     return null;
   let usd: number;
-  if (bound.kind === "text") {
+  if (bound.kind === "text" && bound.model === "gpt-5.4") {
     const longContext = input > 272000;
     usd =
       (input *
@@ -252,9 +417,21 @@ export function meteredCostEstimate(
           REQUEST_RATE_CARD.textOutputUsdPerMillion *
           (longContext ? 1.5 : 1)) /
       1e6;
-  } else if (bound.kind === "image" && bound.evidence.referenceCount === 0) {
+  } else if (bound.kind === "image" && bound.model === "gpt-image-2") {
+    const textInput = usage.input_text_tokens,
+      imageInput = usage.input_image_tokens;
+    // Direct Images API usage reports text/image input separately. Do not
+    // classify aggregate input as text or silently assume unknown inputs cost 0.
+    if (
+      ![textInput, imageInput].every(
+        (n) => Number.isSafeInteger(n) && n >= 0,
+      ) ||
+      textInput + imageInput !== input
+    )
+      return null;
     usd =
-      (input * REQUEST_RATE_CARD.imageTextInputUsdPerMillion +
+      (textInput * REQUEST_RATE_CARD.imageTextInputUsdPerMillion +
+        imageInput * REQUEST_RATE_CARD.imageInputUsdPerMillion +
         output * REQUEST_RATE_CARD.imageOutputUsdPerMillion) /
       1e6;
   } else return null;

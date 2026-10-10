@@ -5,8 +5,9 @@ import {
   PUBLIC_HERO_ARTWORK,
 } from "../shared/publicArt.js";
 import { OperatorAccess } from "./OperatorAccess.js";
+import { OperatorFeedback } from "./OperatorFeedback.js";
 import { CreativeLab } from "./CreativeLab.js";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowLeft,
@@ -214,6 +215,8 @@ function App() {
           <OrderHistory />
         ) : path === "/operator/orders" ? (
           <CommerceOperations />
+        ) : path === "/operator/feedback" ? (
+          <OperatorFeedback />
         ) : path === "/operator/costs" ? (
           <OperatorCosts />
         ) : path === "/operator/studio" ? (
@@ -393,7 +396,12 @@ function Account({
         new URLSearchParams(location.hash.split("?")[1] ?? "").get("invite") ??
         "",
     ),
+    [linkInvitation, setLinkInvitation] = useState(() =>
+      !!new URLSearchParams(location.hash.split("?")[1] ?? "").get("invite"),
+    ),
+    [manualInvitation, setManualInvitation] = useState(false),
     [inviteRequired, setInviteRequired] = useState(false),
+    [creationReady, setCreationReady] = useState<boolean | null>(null),
     [adult, setAdult] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<{
@@ -401,15 +409,36 @@ function Account({
       message: string;
     } | null>(null);
   const mode = login ? "login" : "join";
+  const invitationRevision = useRef(0);
   useEffect(() => {
-    void api<{ inviteRequired?: boolean }>("/session").then((s) =>
-      setInviteRequired(!!s.inviteRequired),
-    );
+    let current = true;
+    void api<{ inviteRequired?: boolean }>("/session")
+      .then((s) => { if (current) setInviteRequired(!!s.inviteRequired); })
+      .catch(() => undefined);
+    void api<{ ready: boolean }>("/engine")
+      .then((s) => { if (current) setCreationReady(s.ready); })
+      .catch(() => undefined);
+    const invitationChanged = () => {
+      if (location.hash.split("?")[0] !== "#/join") return;
+      const token = new URLSearchParams(location.hash.split("?")[1] ?? "").get("invite");
+      if (!token) return;
+      invitationRevision.current++;
+      setInviteCode(token);
+      setLinkInvitation(true);
+      setManualInvitation(false);
+      setError(null);
+    };
+    window.addEventListener("hashchange", invitationChanged);
+    return () => {
+      current = false;
+      window.removeEventListener("hashchange", invitationChanged);
+    };
   }, []);
   async function submit(event: React.SubmitEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
+    const submittedInvitationRevision = invitationRevision.current;
     try {
       await api(
         login ? "/login" : "/register",
@@ -419,7 +448,11 @@ function Account({
     } catch (cause) {
       // A request may finish after the person switches forms. Keep its error
       // attached to the submitted action, without clearing their credentials.
+      // A previous link's delayed rejection must not invalidate a new link.
+      if (!login && submittedInvitationRevision !== invitationRevision.current) return;
       setError({ mode, message: (cause as Error).message });
+      if (!login && /invitation|invite/i.test((cause as Error).message))
+        setManualInvitation(true);
     } finally {
       setBusy(false);
     }
@@ -435,6 +468,21 @@ function Account({
       </p>
       {!login && (
         <div>
+          {creationReady === true ? (
+            <p className="small muted">
+              Your invited digital book is free during our feedback pilot. No
+              card required. Read it first; a printed copy is an optional
+              purchase at the end, when ordering is available.
+            </p>
+          ) : creationReady === false ? (
+            <p className="small muted">
+              You can explore and save a memory now, with no card required.
+              Book creation is not available yet. Invited digital books will
+              be free during our feedback pilot; printed copies are optional.
+            </p>
+          ) : (
+            <p className="small muted">No card is needed to open your private shelf.</p>
+          )}
           <p>
             Already have a shelf?{" "}
             <a href="#/login" onClick={() => setError(null)}>
@@ -444,9 +492,10 @@ function Account({
           </p>
           {inviteRequired && (
             <p className="small muted">
-              New shelves are invitation-only during the pilot. Enter the
-              invitation code you received below. You do not need a new
-              invitation to sign in to an existing shelf.
+              {linkInvitation && !manualInvitation
+                ? "Your invitation is included in this link. You don’t need to copy a code."
+                : "New shelves are invitation-only during the pilot. Open the link you received, or enter its invitation code below."}
+              {" "}You do not need a new invitation to sign in to an existing shelf.
             </p>
           )}
         </div>
@@ -479,9 +528,9 @@ function Account({
             placeholder="At least 10 characters"
           />
         </label>
-        {!login && inviteRequired && (
+        {!login && inviteRequired && (!linkInvitation || manualInvitation) && (
           <label>
-            Invitation code
+            Invitation code{linkInvitation && manualInvitation ? " — try another invitation" : ""}
             <input
               type="password"
               required

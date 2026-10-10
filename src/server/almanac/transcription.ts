@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { pilotAccess, pilotCreationFunding, pilotJobFunding, linkPilotJob, reservePilotRequest, markPilotDispatched, settlePilotRequest } from "../pilot/service.js";
+import { pilotConnectionReady, scopedPilotConfig } from "../pilot/integration.js";
 import { id, now, hash, canonical, type Store } from "../store.js";
 import {
   AccessError,
@@ -53,6 +55,18 @@ interface Transcription {
 }
 const stage = "interview_transcription";
 
+// Keep the original call status and receipt. Only an explicit matching ledger
+// reconciliation can establish that an uncertain pilot request was not processed.
+function unresolvedTranscription(s: Store, jobId: string, pilot: boolean) {
+  return s.one(
+    `SELECT c.id FROM studio_calls c WHERE c.jobId=? AND (c.status='completed' OR
+      (c.status IN ('started','ambiguous_failure') AND ${pilot
+        ? "NOT EXISTS(SELECT 1 FROM pilot_attempts a WHERE a.id=c.id AND a.jobId=c.jobId AND a.status='not_processed')"
+        : "1=1"})) LIMIT 1`,
+    jobId,
+  );
+}
+
 /** Explicit consent dispatches one bounded audio request, not a whole book. */
 export function queueInterviewTranscription(
   s: Store,
@@ -76,6 +90,14 @@ export function queueInterviewTranscription(
     "SELECT j.* FROM studio_jobs j JOIN almanac_transcriptions t ON t.jobId=j.id WHERE t.turnId=?",
     turnId,
   );
+  const requestedPilot = config.pilotCreationId ? pilotCreationFunding(s, config.pilotCreationId) : null;
+  const savedPilot = previous ? pilotJobFunding(s, previous.id) : null;
+  const pilot = savedPilot ?? requestedPilot;
+  if ((config.pilotCreationId && !requestedPilot) || (pilot && pilot.ownerId !== ownerId) ||
+      (requestedPilot && savedPilot && requestedPilot.creationId !== savedPilot.creationId))
+    throw new AccessError(403, "This recording has no matching pilot authorization.");
+  if (requestedPilot && previous && !savedPilot && previous.status !== "complete")
+    throw new AccessError(409, "This recording already has a separately funded request. Reconcile that saved request first.");
   if (
     previous?.status === "complete" ||
     ["queued", "running"].includes(previous?.status ?? "")
@@ -83,6 +105,12 @@ export function queueInterviewTranscription(
     return { jobId: previous!.id, status: previous!.status };
   if (turn.transcript)
     throw new AccessError(409, "This answer already has a transcript.");
+  if (pilot) {
+    if (!pilotConnectionReady(s, config) || pilot.campaign.state !== "active" ||
+        (pilotAccess(s, pilot.ownerId)?.remainingCents ?? 0) <= 0)
+      throw new AccessError(409, "This feedback pilot is paused. Your recording remains saved.");
+    config = scopedPilotConfig(config, pilot.campaign, pilot.creationId);
+  }
   if (!availability(config).ready)
     throw new AccessError(
       409,
@@ -106,12 +134,7 @@ export function queueInterviewTranscription(
       turn.audio!.bytes,
     );
     if (previous) {
-      if (
-        s.one(
-          "SELECT id FROM studio_calls WHERE jobId=? AND status IN ('started','ambiguous_failure','completed')",
-          previous.id,
-        )
-      )
+      if (unresolvedTranscription(s, previous.id, !!pilot))
         throw new AccessError(
           409,
           "This transcription may already have been processed. Your recording is safe; its saved request needs reconciliation before another paid attempt.",
@@ -132,19 +155,19 @@ export function queueInterviewTranscription(
           "SELECT allowance FROM engine_budget WHERE runId=?",
           previous.id,
         )?.allowance ?? 0;
-      if (reservedBudget(s) - held + bound.maxCostCents > config.budgetCents)
+      if (!pilot && reservedBudget(s) - held + bound.maxCostCents > config.budgetCents)
         throw new AccessError(
           409,
           "Your recording is saved. The available transcription allowance is currently used.",
         );
-      requireAllocationIncrease(
+      if (!pilot) requireAllocationIncrease(
         s,
         previous.id,
         Math.max(0, bound.maxCostCents - held),
         config,
       );
       // Keep existing invitation allocation and all rejected call evidence. No new book grant.
-      s.run(
+      if (!pilot) s.run(
         "UPDATE engine_budget SET allowance=? WHERE runId=?",
         bound.maxCostCents,
         previous.id,
@@ -173,14 +196,14 @@ export function queueInterviewTranscription(
         409,
         "Another answer is being transcribed. Please let it finish first.",
       );
-    if (reservedBudget(s) + bound.maxCostCents > config.budgetCents)
+    if (!pilot && reservedBudget(s) + bound.maxCostCents > config.budgetCents)
       throw new AccessError(
         409,
         "Your recording is saved. The available transcription allowance is currently used.",
       );
     const jobId = id(),
       at = now();
-    allocateGeneration(s, ownerId, jobId, bound.maxCostCents, config, false);
+    if (!pilot) allocateGeneration(s, ownerId, jobId, bound.maxCostCents, config, false);
     const request = {
       version: 1,
       sessionId,
@@ -199,7 +222,8 @@ export function queueInterviewTranscription(
       bound.maxCostCents,
       at,
     );
-    s.run(
+    if (pilot) linkPilotJob(s, ownerId, config.pilotCreationId!, jobId);
+    if (!pilot) s.run(
       "INSERT INTO engine_budget VALUES(?,?,?)",
       jobId,
       bound.maxCostCents,
@@ -231,14 +255,16 @@ export async function runInterviewTranscription(
   s: Store,
   provider: Provider,
   config: EngineConfig,
+  options: { jobId?: string } = {},
 ) {
   if (isRecoveryLocked(s) || !availability(config).ready) return false;
   ensureStudioBudgetRecords(s);
   const token = id();
   const job = s.transaction(() => {
     const row = s.one<Job>(
-      "SELECT * FROM studio_jobs WHERE kind='interview_transcription' AND (status='queued' OR (status='running' AND leaseUntil<?)) ORDER BY rowid LIMIT 1",
+      `SELECT * FROM studio_jobs WHERE kind='interview_transcription' AND (status='queued' OR (status='running' AND leaseUntil<?)) AND ${options.jobId ? "id=?" : "NOT EXISTS(SELECT 1 FROM pilot_jobs WHERE jobId=studio_jobs.id)"} ORDER BY rowid LIMIT 1`,
       Date.now(),
+      ...(options.jobId ? [options.jobId] : []),
     );
     if (row)
       s.run(
@@ -250,6 +276,7 @@ export async function runInterviewTranscription(
     return row;
   });
   if (!job) return false;
+  const pilot = pilotJobFunding(s, job.id);
   const source = s.one<Transcription>(
     "SELECT * FROM almanac_transcriptions WHERE jobId=?",
     job.id,
@@ -300,12 +327,7 @@ export async function runInterviewTranscription(
     );
   };
   try {
-    if (
-      s.one(
-        "SELECT id FROM studio_calls WHERE jobId=? AND status IN ('started','ambiguous_failure','completed')",
-        job.id,
-      )
-    ) {
+    if (unresolvedTranscription(s, job.id, !!pilot)) {
       pause(
         "A saved transcription request may have completed. It will not be sent again automatically.",
       );
@@ -325,12 +347,12 @@ export async function runInterviewTranscription(
         "Transcription paused before sending your recording.",
         "pause",
       );
-    if (!provider.withRequestGuard)
+    if (pilot ? !provider.withEstimatedPolicy : !provider.withRequestGuard)
       throw new StudioPreDispatchPause(
         "This provider cannot verify transcription costs. No recording was sent.",
       );
     const expected = audioRequestCost(source.model, turn.audio.bytes);
-    provider = provider.withRequestGuard((bound: RequestCostBound) => {
+    const reserveAudio = (bound: RequestCostBound, estimate?: import("../engine/request-cost.js").EstimatedRequestReservation) => {
       if (callId || !owns() || isRecoveryLocked(s))
         throw new StudioPreDispatchPause(
           "This saved request is no longer ready to send.",
@@ -341,24 +363,30 @@ export async function runInterviewTranscription(
           "pause",
         );
       if (
-        canonical(bound) !== canonical(expected) ||
-        bound.maxCostCents > job.allowance
+        (!pilot && (canonical(bound) !== canonical(expected) ||
+        bound.maxCostCents > job.allowance))
       )
         throw new StudioPreDispatchPause(
           "The transcription cost rule changed. No recording was sent.",
         );
+      const attemptId = id();
       s.transaction(() => {
-        if (reservedBudget(s) > config.budgetCents)
+        if (!pilot && reservedBudget(s) > config.budgetCents)
           throw new StudioPreDispatchPause(
             "The transcription allowance is not available. No recording was sent.",
             "budget",
             bound.maxCostCents,
           );
-        callId = id();
+        if (pilot) {
+          if (!estimate) throw new StudioPreDispatchPause("This pilot transcription has no request estimate.");
+          const reservation = reservePilotRequest(s, { jobId: job.id, attemptId, stage, inputHash, reservation: estimate });
+          if (!reservation.isNew) throw new StudioPreDispatchPause("This transcription is already recorded.");
+          markPilotDispatched(s, attemptId);
+        }
         startedAt = Date.now();
         s.run(
           "INSERT INTO studio_calls VALUES(?,?,?,?,?,?,'started',NULL,NULL,NULL,?,NULL,?)",
-          callId,
+          attemptId,
           job.id,
           stage,
           "audio",
@@ -368,12 +396,16 @@ export async function runInterviewTranscription(
           now(),
         );
         s.run(
-          "INSERT INTO studio_request_bounds VALUES(?,?)",
-          callId,
-          canonical(bound),
+          estimate ? "INSERT INTO studio_request_estimates VALUES(?,?)" : "INSERT INTO studio_request_bounds VALUES(?,?)",
+          attemptId,
+          canonical(estimate ?? bound),
         );
       });
-    });
+      callId = attemptId;
+    };
+    provider = pilot
+      ? provider.withEstimatedPolicy!(pilot.campaign.policy.requestPolicy, pilot.campaign.policyHash, (estimate) => reserveAudio({ ...expected, maxCostCents: estimate.reservationCents }, estimate))
+      : provider.withRequestGuard!(reserveAudio);
     const text = await provider.transcribe(
       s.readAsset(job.projectId, source.audioHash),
       turn.audio.mime,
@@ -434,6 +466,12 @@ export async function runInterviewTranscription(
     clearInterval(heartbeat);
     if (callId) {
       const receipt = provider.takeReceipt?.();
+      if (pilot) settlePilotRequest(s, callId, {
+        outcome: outcome === "rejected" ? "not_processed" : outcome === "completed" ? "completed" : "ambiguous",
+        evidenceKind: outcome === "rejected" ? "provider_rejection" : outcome === "completed" && receipt?.meteredCost ? "provider_usage" : "unknown_outcome",
+        ...(outcome === "completed" && receipt?.meteredCost ? { usageEstimatedCents: receipt.meteredCost.estimatedCostCents } : {}),
+        evidenceHash: hash(canonical(receipt ?? { outcome })),
+      });
       s.run(
         "UPDATE studio_calls SET status=?,latencyMs=?,requestId=?,usage=? WHERE id=?",
         outcome,
@@ -491,8 +529,10 @@ export function interviewRecovery(
     "SELECT id,status,requestId,estimatedCents,actualCents,createdAt FROM studio_calls WHERE jobId=? ORDER BY rowid",
     job.id,
   );
+  const pilot = pilotJobFunding(s, job.id);
   const uncertain = calls.some((call) =>
-    ["started", "ambiguous_failure"].includes(call.status),
+    ["started", "ambiguous_failure"].includes(call.status) &&
+    !(pilot && s.one("SELECT id FROM pilot_attempts WHERE id=? AND jobId=? AND status='not_processed'", call.id, job.id)),
   );
   const resumable =
     !turn.transcript &&

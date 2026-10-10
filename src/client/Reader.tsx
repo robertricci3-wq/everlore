@@ -1,4 +1,5 @@
 import { Purchase } from "./Purchase.js";
+import { BookFeedback } from "./BookFeedback.js";
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
@@ -362,6 +363,13 @@ export function Reader({
           </p>
         </div>
       )}
+      <BookFeedback
+        key={`${project.id}:${book.revision}:${book.contentHash}`}
+        projectId={project.id}
+        revision={book.revision}
+        contentHash={book.contentHash}
+        editionId={snapshot?.id ?? selectedEdition?.id}
+      />
       <Purchase
         key={`${project.id}:${snapshot?.id ?? book.contentHash}`}
         projectId={project.id}

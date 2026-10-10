@@ -14,6 +14,8 @@ services:
     envVars:
       - key: DISABLE_WORKER
         value: "1"
+      - key: EVERLORE_PILOT_WORKER
+        value: "0"
       - key: CHECKOUT_ENABLED
         value: "false"
       - key: COMMERCE_MODE

@@ -40,6 +40,7 @@ const rootFiles = [
 const scripts = [
   "run.sh",
   "operator.ts",
+  "pilot.ts",
   "openai.ts",
   "hosted-book-test.ts",
   "backup.ts",

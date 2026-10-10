@@ -382,7 +382,7 @@ export function bookCostReport(s: Store, actor: string): CostReport {
     createdAt: string;
     reservedCents: number;
   }>(
-    "SELECT j.id,j.projectId,j.kind,j.status,j.stage,j.baseRevision,j.createdAt,COALESCE(b.allowance,0) AS reservedCents FROM studio_jobs j LEFT JOIN engine_budget b ON b.runId=j.id WHERE j.kind!='lab' ORDER BY j.rowid",
+    "SELECT j.id,j.projectId,j.kind,j.status,j.stage,j.baseRevision,j.createdAt,COALESCE((SELECT SUM(accountedCents) FROM pilot_attempts WHERE jobId=j.id),b.allowance,0) AS reservedCents FROM studio_jobs j LEFT JOIN engine_budget b ON b.runId=j.id WHERE j.kind!='lab' ORDER BY j.rowid",
   );
   const jobs: JobCost[] = rawJobs.map((j) => ({
     ...j,
@@ -553,6 +553,9 @@ export function bookCostReport(s: Store, actor: string): CostReport {
   const retainedReservations = s.all<{ jobId: string; reservedCents: number }>(
     "SELECT b.runId AS jobId,b.allowance AS reservedCents FROM engine_budget b WHERE b.allowance>0 AND NOT EXISTS(SELECT 1 FROM studio_jobs j WHERE j.id=b.runId) AND NOT EXISTS(SELECT 1 FROM engine_runs r WHERE r.id=b.runId) ORDER BY b.createdAt",
   );
+  retainedReservations.push(...s.all<{ jobId: string; reservedCents: number }>(
+    "SELECT jobId,SUM(accountedCents) AS reservedCents FROM pilot_attempts a WHERE NOT EXISTS(SELECT 1 FROM studio_jobs j WHERE j.id=a.jobId) GROUP BY jobId HAVING SUM(accountedCents)>0",
+  ));
   const retainedEvidence = [...current.values()].filter((r) =>
     r.targetType === "studio_call"
       ? !calls.some((c) => c.id === r.targetId)

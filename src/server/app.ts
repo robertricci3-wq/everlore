@@ -1,5 +1,8 @@
 import { isRecoveryLocked } from "./recovery-lock.js";
 import { installAlmanacRoutes } from "./almanac/routes.js";
+import { installFeedbackRoutes } from "./feedback.js";
+import { pilotConnectionReady } from "./pilot/integration.js";
+import { pilotCampaignSummary, issuePilotInvitation, revokePilotInvitation } from "./pilot/service.js";
 import { interviewRecovery } from "./almanac/transcription.js";
 import { installOperatorCostRoutes } from "./costs/routes.js";
 import { assertSupportedCostPlan } from "./engine/request-cost.js";
@@ -283,6 +286,7 @@ export function createApp(
       try { assertSupportedCostPlan({ text: config.textModel, image: config.imageModel, audio: config.audioModel }, config.imageRender ?? legacyImageRender(config.imageModel)); }
       catch { ready = false; }
     }
+    if (!ready && pilotConnectionReady(store, config)) ready = !!store.one("SELECT c.id FROM pilot_campaigns c JOIN pilot_authorizations a ON a.campaignId=c.id WHERE c.state='active' AND c.totalCents>(SELECT COALESCE(SUM(accountedCents),0) FROM pilot_attempts WHERE campaignId=c.id)");
     res.json({ ready, message: ready ? "Ready when you are. Everlore takes care of making your book." : "You can save a memory now. Story creation is not available yet; your recording will be kept safely." });
   });
   app.get("/api/session", (req, res) => {
@@ -403,22 +407,38 @@ export function createApp(
   });
   installLabRoutes(app, store, config, auth, owner);
   installAlmanacRoutes(app, store, { auth, owner, config });
+  installFeedbackRoutes(app, store, { auth, owner, operatorGuard });
   installOperatorCostRoutes(app, store, operatorGuard);
   installCommerceRoutes(app, store, auth, owner);
   installCommerceOperatorRoutes(app, store, operatorGuard);
-  app.get("/api/operator/access", operatorGuard, (_req, res) =>
-    res.json(accessView(store, config)),
-  );
-  app.post("/api/operator/invitations", operatorGuard, (req, res) =>
-    res
-      .status(201)
-      .json(issueInvitation(store, owner(req).id, req.body, config)),
-  );
+  const latestPilot = () => store.one<{ id: string }>("SELECT id FROM pilot_campaigns ORDER BY (state='active') DESC,createdAt DESC,rowid DESC LIMIT 1");
+  app.get("/api/operator/pilot", operatorGuard, (req, res) => {
+    const campaign = latestPilot();
+    res.json({ pilot: campaign ? pilotCampaignSummary(store, owner(req).id, campaign.id) : null, workerEnabled: process.env.EVERLORE_PILOT_WORKER === "1" });
+  });
+  app.get("/api/operator/access", operatorGuard, (req, res) => {
+    const campaign = latestPilot();
+    if (!campaign) return res.json(accessView(store, config));
+    const report = pilotCampaignSummary(store, owner(req).id, campaign.id);
+    const issued = store.one<{ count: number }>("SELECT COUNT(*) AS count FROM pilot_invitations WHERE campaignId=? AND ownerId IS NULL AND revokedAt IS NULL AND expiresAt>?", campaign.id, Date.now())!.count;
+    res.json({ cycleReserveCents: 0, availableCents: report.remainingCents, canInvite: report.campaign.state === "active" && report.remainingCents > 0 && report.households + issued < report.campaign.maxHouseholds,
+      pilot: { state: report.campaign.state, totalCents: report.campaign.totalCents, accountedCents: report.accountedCents, households: report.households, maxHouseholds: report.campaign.maxHouseholds },
+      invitations: report.invitations.map((item) => { const invitation = item as Record<string, unknown>; return { ...invitation, redeemedBy: invitation.ownerId, bookCount: 1 }; }),
+    });
+  });
+  app.post("/api/operator/invitations", operatorGuard, (req, res) => {
+    const campaign = latestPilot();
+    res.status(201).json(campaign
+      ? issuePilotInvitation(store, owner(req).id, campaign.id, { key: req.body.key ?? id(), label: req.body.label, expiresDays: req.body.expiresDays ?? 7 })
+      : issueInvitation(store, owner(req).id, req.body, config));
+  });
   app.post(
     "/api/operator/invitations/:invitationId/revoke",
     operatorGuard,
     (req, res) => {
-      revokeInvitation(store, owner(req).id, String(req.params.invitationId));
+      const invitationId = String(req.params.invitationId);
+      if (store.one("SELECT id FROM pilot_invitations WHERE id=?", invitationId)) revokePilotInvitation(store, owner(req).id, invitationId);
+      else revokeInvitation(store, owner(req).id, invitationId);
       res.json({ ok: true });
     },
   );
