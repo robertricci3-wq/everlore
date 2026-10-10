@@ -1,3 +1,4 @@
+import { structuredOutput } from "./structured-output.js";
 import { z } from "zod";
 import sharp from "sharp";
 import { createHash } from "node:crypto";
@@ -472,6 +473,7 @@ export class OpenAIProvider implements Provider {
     data: unknown,
     images: Buffer[] = [],
   ): Promise<T> {
+    const output = structuredOutput(schema);
     const content: object[] = [
       { type: "input_text", text: JSON.stringify(data) },
     ];
@@ -498,7 +500,7 @@ export class OpenAIProvider implements Provider {
           type: "json_schema",
           name,
           strict: true,
-          schema: z.toJSONSchema(schema),
+          schema: output.schema,
         },
       },
     };
@@ -541,7 +543,7 @@ export class OpenAIProvider implements Provider {
       .filter((b) => b.type === "output_text")
       .map((b) => b.text ?? "")
       .join("");
-    return schema.parse(JSON.parse(text));
+    return output.parse(JSON.parse(text));
   }
   async image(prompt: string, reference?: Buffer | Buffer[]) {
     let result: Record<string, unknown>;
