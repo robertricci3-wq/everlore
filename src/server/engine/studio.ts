@@ -1,3 +1,4 @@
+import { SceneAttemptAuthorization } from "./scene-attempt.js";
 import { worldProblems } from "./scene-validation.js";
 import { isRecoveryLocked } from "../recovery-lock.js";
 import {
@@ -2104,10 +2105,11 @@ export async function runStudio(
       name: string,
       description: unknown,
       refs: Buffer[],
+      maxAttempts = 3,
     ) => {
       let previous: string | undefined,
         defects: string[] = [];
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const picture =
           studioCached<string>(
             store,
@@ -2452,7 +2454,7 @@ export async function runStudio(
           ? request.repair.spreads
           : [],
     );
-    const picture = (i: number) =>
+    const originalPicture = (i: number) =>
       Promise.resolve(
         studioCached<string>(
           store,
@@ -2519,6 +2521,22 @@ export async function runStudio(
             "local",
           ),
       );
+    const picture = async (i: number) => {
+      const saved = await originalPicture(i);
+      if (saved) return saved;
+      const raw = studioCached(store, job.id, `scene_attempt_authorization_v1_${i + 1}`);
+      if (!raw) return null;
+      const authorization = SceneAttemptAuthorization.parse(raw);
+      if (authorization.spread !== i + 1 || authorization.baseRevision !== job.baseRevision ||
+          authorization.priorHash !== studioCached(store, job.id, `picture_${i + 1}_attempt_3`))
+        throw new EngineError("The illustration authorization no longer matches this checkpoint.");
+      return step(`authorized_picture_v1_${i + 1}`, { authorization, scene: scenes.scenes[i], world, references: refs },
+        () => paint(`picture_${i + 1}_authorized_extra_v1`, {
+          world, scene: scenes.scenes[i],
+          direction: authorization.instruction,
+          preservation: "Preserve canonical identities, source particulars, scene action and the whole book's painted visual language. The explicit direction clarifies staging, not remembered facts.",
+        }, refs.map(r => store.readAsset(job.projectId, r.hash)), 1), "local");
+    };
     for (const i of [0, 5, 10])
       if (!(await picture(i))) {
         pause(

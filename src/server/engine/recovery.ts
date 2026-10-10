@@ -262,7 +262,9 @@ export function studioRecovery(store: Store, jobId: string) {
   const continueIndependentArt = job.status === "needs_editor" &&
     !!store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage LIKE 'accepted_picture_meaning_v2_%' AND state='completed' AND result='null'", jobId) &&
     (store.one<{ n: number }>("SELECT COUNT(*) n FROM studio_steps WHERE jobId=? AND stage LIKE 'accepted_picture_meaning_v2_%' AND state='completed'", jobId)?.n ?? 0) < 12;
+  const authorizedSceneAttempt = job.status === "needs_editor" && !!store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage LIKE 'scene_attempt_authorization_v1_%' AND NOT EXISTS(SELECT 1 FROM studio_steps p WHERE p.jobId=studio_steps.jobId AND p.stage=replace(studio_steps.stage,'scene_attempt_authorization_v1_','authorized_picture_v1_'))", jobId);
   const localRepair =
+    authorizedSceneAttempt ||
     continueIndependentArt ||
     sceneReferenceRepair ||
     metadataRepair ||
@@ -299,6 +301,7 @@ export function studioRecovery(store: Store, jobId: string) {
     localRepair,
     sceneReferenceRepair,
     continueIndependentArt,
+    authorizedSceneAttempt,
     reviewCopyReady,
     artRequirementsRepair,
     artDirectionRepair,

@@ -1,3 +1,4 @@
+import { authorizeSceneAttempt } from "../src/server/engine/scene-attempt.js";
 import { configureAccess } from "../src/server/access.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -908,5 +909,36 @@ test("an exhausted non-preview scene retains its failure while independent pages
     await runStudio(t.store, p, testConfig);
     assert.equal(p.calls.length, before);
     assert.equal(studioView(t.store, "memory")!.status, "needs_editor");
+  } finally { t.close(); }
+});
+
+for (const resolves of [false, true]) test(`one explicitly authorized scene attempt stays bounded (resolves=${resolves})`, async () => {
+  const t = setup(), p = new StudioFake();
+  p.onStructured = name => { p.incorrectArt = name.startsWith("picture_7_"); };
+  try {
+    configureAccess(t.store, false, "owner");
+    queueStudio(t.store, t.project(), { ...consent, autonomous: true }, testConfig);
+    await runStudio(t.store, p, testConfig);
+    const job = t.store.one<{ id: string }>("SELECT id FROM studio_jobs")!;
+    const direction = "Show two unmistakably separate homes, retaining the scene action and canonical characters.";
+    assert.throws(() => authorizeSceneAttempt(t.store, job.id, "other", 7, direction));
+    assert.throws(() => authorizeSceneAttempt(t.store, job.id, "owner", 8, direction));
+    const approval = authorizeSceneAttempt(t.store, job.id, "owner", 7, direction);
+    assert.deepEqual(authorizeSceneAttempt(t.store, job.id, "owner", 7, direction), approval);
+    assert.throws(() => authorizeSceneAttempt(t.store, job.id, "owner", 7, direction + " changed"));
+    if (resolves) p.onStructured = () => { p.incorrectArt = false; };
+    const before = p.calls.filter(n => n.startsWith("image_")).length;
+    t.store.run("UPDATE studio_jobs SET status='queued'");
+    await runStudio(t.store, p, testConfig);
+    assert.equal(p.calls.filter(n => n.startsWith("image_")).length, before + 1);
+    assert.equal(studioView(t.store, "memory")!.status, resolves ? "complete" : "needs_editor");
+    assert.equal(t.store.one<{ result: string }>("SELECT result FROM studio_steps WHERE stage='accepted_picture_meaning_v2_7'")!.result, "null");
+    assert.equal(t.store.all("SELECT * FROM revisions").length, resolves ? 1 : 0);
+    if (!resolves) {
+      const calls = p.calls.length;
+      t.store.run("UPDATE studio_jobs SET status='queued'");
+      await runStudio(t.store, p, testConfig);
+      assert.equal(p.calls.length, calls);
+    }
   } finally { t.close(); }
 });
