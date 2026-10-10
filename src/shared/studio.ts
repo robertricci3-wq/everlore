@@ -6,6 +6,7 @@ import {
   PremiseDiversity,
 } from "./picturebook.js";
 import { EngineProfile } from "./profile.js";
+import type { ContinuityView } from "./continuity.js";
 
 export const STUDIO_VERSION = "legacy-2";
 export const STYLE_VERSION = "folk-gouache-1";
@@ -354,6 +355,8 @@ export const ScenePatch = z.object({
   scenes: z.array(SceneContract).min(1).max(12),
 });
 export interface StudioView {
+  continuity?: ContinuityView;
+  progressPreview?: { artHash: string; alt: string };
   id: string;
   status: string;
   stage: string;

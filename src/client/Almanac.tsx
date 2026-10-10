@@ -10,7 +10,7 @@ import {
   Plus,
   Settings2,
 } from "lucide-react";
-import { PUBLIC_HERO_ARTWORK } from "../shared/publicArt.js";
+import { RecordEntry } from "./MemoryComposer.js";
 import { ALMANAC_CHAPTERS } from "../shared/almanac.js";
 import { api, go } from "./api.js";
 import type {
@@ -21,12 +21,11 @@ import type {
 import { AlmanacMotif } from "./AlmanacMotif.js";
 import { ArchiveRestore } from "./ArchiveRestore.js";
 
-export function Almanac({ reading = false }: { reading?: boolean }) {
+export function Almanac({ reading = false, organizing = false }: { reading?: boolean; organizing?: boolean }) {
   const [data, setData] = useState<AlmanacView>(),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
-  const [suggestionIndex, setSuggestionIndex] = useState(0),
-    [manage, setManage] = useState(false),
+  const [manage, setManage] = useState(false),
     [adding, setAdding] = useState(false),
     [title, setTitle] = useState(""),
     [renameId, setRenameId] = useState(""),
@@ -67,24 +66,6 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
   }
   const chapters = ALMANAC_CHAPTERS;
   const visiblePages = data?.pages.filter((p) => !p.hidden) ?? [];
-  // A small editorial starting point, not a memory score or personalization claim.
-  const preferred = [
-    "people-how-we-met",
-    "table-recipes",
-    "outdoors-adventures",
-    "before-mischief",
-  ];
-  const suggestions = [...visiblePages].sort((a, b) => {
-    const rank = (id: string) => {
-      const i = preferred.indexOf(id);
-      return i < 0 ? preferred.length : i;
-    };
-    return (
-      Number(a.memoryCount > 0 || a.bookCount > 0) -
-        Number(b.memoryCount > 0 || b.bookCount > 0) || rank(a.id) - rank(b.id)
-    );
-  });
-  const suggestion = suggestions[suggestionIndex % suggestions.length];
   const finished = data?.books.filter((b) => b.revision > 0) ?? [];
   const drafts =
     data?.drafts
@@ -94,15 +75,15 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
           (d.status === "open" ||
             !data.books.some((b) => b.sourceSessionId === d.id)),
       )
-      .slice(0, 4) ?? [];
+      .slice(0, 1) ?? [];
   const titleDrafts = data?.titleDrafts ?? [];
   const inProgress =
     data?.books.filter((b) => b.revision === 0).slice(0, 4) ?? [];
   return (
     <main className="almanac-page enter">
-      <header className="almanac-heading">
+      <header className={`almanac-heading ${reading ? "" : "family-heading"}`}>
         <div>
-          <span className="eyebrow">THE STORIES ONLY YOUR FAMILY CAN TELL</span>
+          {reading && <span className="eyebrow">THE STORIES ONLY YOUR FAMILY CAN TELL</span>}
           <h1>
             {reading ? (
               "A little world to return to."
@@ -112,11 +93,11 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
               </>
             )}
           </h1>
-          <p>
+          {reading && <p>
             {reading
               ? "Familiar faces. Favourite adventures. Open a book and settle in."
               : "Tell it as you remember it. We’ll find the story inside."}
-          </p>
+          </p>}
         </div>
       </header>
       {error && (
@@ -150,7 +131,8 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
       )}
       {data && !reading && (
         <>
-          {(drafts.length > 0 ||
+          {!organizing && <RecordEntry />}
+          {!organizing && (drafts.length > 0 ||
             inProgress.length > 0 ||
             titleDrafts.length > 0) && (
             <section className="almanac-saved" aria-label="Saved memories">
@@ -172,7 +154,7 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
                   </a>
                 ))}
                 {drafts.map((d) => (
-                  <a key={d.id} href={`#/interview/${d.id}`}>
+                  <a key={d.id} href={`#/tell/${d.id}`}>
                     <Mic size={22} />
                     <span>
                       <strong>
@@ -201,7 +183,7 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
               </div>
             </section>
           )}
-          {finished.length > 0 && (
+          {!organizing && finished.length > 0 && (
             <section className="almanac-finished">
               <div className="almanac-section-heading">
                 <div>
@@ -219,48 +201,8 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
               </div>
             </section>
           )}
-          {suggestion && (
-            <section className="story-invitation" aria-label="A place to begin">
-              <div className="story-invitation-copy">
-                <span className="eyebrow">ONE MEMORY IS ENOUGH</span>
-                <h2>{suggestion.title}</h2>
-                <p>{suggestion.description}</p>
-                <a className="button" href={`#/memory/${suggestion.id}`}>
-                  <Mic size={20} /> Tell this memory <ArrowRight size={18} />
-                </a>
-                <div className="suggestion-alternatives">
-                  <button
-                    className="text-button"
-                    disabled={suggestions.length < 2}
-                    onClick={() => setSuggestionIndex((i) => i + 1)}
-                  >
-                    Try another idea
-                  </button>
-                  <a className="text-button" href="#/capture">
-                    I have a story in mind
-                  </a>
-                </div>
-              </div>
-              <figure>
-                <a href="#/example" aria-label="Explore the illustrations">
-                  <img
-                    src={PUBLIC_HERO_ARTWORK.src}
-                    alt={PUBLIC_HERO_ARTWORK.alt}
-                    width={PUBLIC_HERO_ARTWORK.width}
-                    height={PUBLIC_HERO_ARTWORK.height}
-                  />
-                </a>
-                <figcaption>
-                  An Everlore story, shared with permission.
-                </figcaption>
-              </figure>
-            </section>
-          )}
-          {!suggestion && (
-            <a className="button" href="#/capture">
-              <Mic size={20} /> Tell a memory
-            </a>
-          )}
+          {organizing && <>
+          <a className="back-link" href="#/shelf">Back to your stories</a>
           <details className="story-ideas">
             <summary>Find a different memory</summary>
             <div className="almanac-overview">
@@ -444,6 +386,7 @@ export function Almanac({ reading = false }: { reading?: boolean }) {
               <ArchiveRestore />
             </details>
           </details>
+          </>}
         </>
       )}
     </main>

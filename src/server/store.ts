@@ -14,6 +14,8 @@ import {
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { migrateLab } from "./lab/schema.js";
+import { migrateContinuity } from "./engine/continuity-schema.js";
+import { forgetProjectContinuity } from "./engine/continuity.js";
 import { migrateAlmanac } from "./almanac/schema.js";
 
 export function hash(value: string | Uint8Array) {
@@ -72,6 +74,7 @@ export class Store {
     `);
     migrateLab(this.db);
     migrateAlmanac(this.db);
+    migrateContinuity(this.db);
   }
   one<T>(sql: string, ...params: SQLInputValue[]) {
     return this.db.prepare(sql).get(...params) as T | undefined;
@@ -152,6 +155,7 @@ export class Store {
       ) WHERE runId IN (SELECT id FROM studio_jobs WHERE projectId=?)`,
         projectId,
       );
+      forgetProjectContinuity(this, projectId);
       this.run("DELETE FROM projects WHERE id=?", projectId);
     });
     for (const asset of assets)

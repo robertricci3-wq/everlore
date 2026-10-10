@@ -10,6 +10,9 @@ export function VoiceTurnRecorder({
   onSaved,
   onDraftState,
   disabled = false,
+  initialStream,
+  completion,
+  onRecordingStarted,
 }: {
   ownerId: string;
   sessionId: string;
@@ -17,6 +20,12 @@ export function VoiceTurnRecorder({
   onSaved: () => Promise<void>;
   onDraftState?: (unsaved: boolean) => void;
   disabled?: boolean;
+  initialStream?: MediaStream;
+  completion?: {
+    canCreate: boolean;
+    onComplete: (intent: "save" | "create") => Promise<void>;
+  };
+  onRecordingStarted?: () => void;
 }) {
   const [draft, setDraft] = useState<AudioDraft>();
   const [state, setState] = useState<
@@ -33,6 +42,10 @@ export function VoiceTurnRecorder({
     alive = useRef(true),
     queue = useRef(Promise.resolve()),
     file = useRef<HTMLInputElement>(null);
+  const latestDraft = useRef<AudioDraft | undefined>(undefined),
+    uploading = useRef(false),
+    finishIntent = useRef<"save" | "create" | null>(null),
+    startedStream = useRef<MediaStream | null>(null);
   const active = state === "recording" || state === "paused";
   useEffect(() => {
     onDraftState?.(
@@ -49,6 +62,7 @@ export function VoiceTurnRecorder({
       .then((value) => {
         if (!alive.current) return;
         if (value) {
+          latestDraft.current = value;
           setDraft(value);
           setState("ready");
           setNotice("Your unsaved recording is still here on this device.");
@@ -69,6 +83,13 @@ export function VoiceTurnRecorder({
       stream.current?.getTracks().forEach((t) => t.stop());
     };
   }, [ownerId, turnId]);
+  useEffect(() => {
+    if (initialStream && state === "idle" && startedStream.current !== initialStream) {
+      startedStream.current = initialStream;
+      void start(initialStream);
+    }
+    // This stream comes only from the person's explicit Record action.
+  }, [initialStream, state]);
   useEffect(() => {
     if (!draft) return;
     const value = URL.createObjectURL(draft.blob);
@@ -109,6 +130,7 @@ export function VoiceTurnRecorder({
       savedAt: Date.now(),
     };
     if (alive.current) setDraft(value);
+    latestDraft.current = value;
     queue.current = queue.current
       .then(() => saveDraft(value))
       .catch(() => {
@@ -118,7 +140,7 @@ export function VoiceTurnRecorder({
           );
       });
   }
-  async function start() {
+  async function start(preparedStream?: MediaStream) {
     setError("");
     setState("opening");
     window.speechSynthesis?.cancel();
@@ -127,7 +149,7 @@ export function VoiceTurnRecorder({
         throw new Error(
           "Recording is unavailable in this browser. You can choose an audio file instead.",
         );
-      const audio = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audio = preparedStream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.current = audio;
       if (!alive.current) {
         audio.getTracks().forEach((t) => t.stop());
@@ -158,6 +180,9 @@ export function VoiceTurnRecorder({
       recorder.onstop = () => {
         audio.getTracks().forEach((t) => t.stop());
         if (alive.current) setState("ready");
+        const intent = finishIntent.current;
+        finishIntent.current = null;
+        if (intent) void upload(intent);
       };
       recorder.onerror = () => {
         audio.getTracks().forEach((t) => t.stop());
@@ -170,6 +195,7 @@ export function VoiceTurnRecorder({
       };
       recorder.start(1000);
       setState("recording");
+      onRecordingStarted?.();
     } catch (cause) {
       stream.current?.getTracks().forEach((t) => t.stop());
       setError((cause as Error).message);
@@ -195,8 +221,10 @@ export function VoiceTurnRecorder({
     setState("ready");
     setNotice("Ready to save. Your file has not been sent yet.");
   }
-  async function upload() {
-    if (!draft || state === "saving") return;
+  async function upload(intent?: "save" | "create") {
+    const savedDraft = latestDraft.current ?? draft;
+    if (!savedDraft || uploading.current) return;
+    uploading.current = true;
     setState("saving");
     setError("");
     try {
@@ -206,18 +234,19 @@ export function VoiceTurnRecorder({
         {
           method: "PUT",
           headers: {
-            "Content-Type": draft.blob.type,
+            "Content-Type": savedDraft.blob.type,
             "X-Evermore-Client": "1",
-            "X-Capture-Mode": draft.mode,
+            "X-Capture-Mode": savedDraft.mode,
           },
-          body: draft.blob,
+          body: savedDraft.blob,
         },
       );
       const result = await response.json();
       if (!response.ok)
         throw new Error(result.error || "The recording could not be saved.");
+      if (intent && completion) await completion.onComplete(intent);
+      else await onSaved();
       await deleteDraft(turnId).catch(() => undefined);
-      await onSaved();
     } catch (cause) {
       if (alive.current) {
         setError(
@@ -225,7 +254,17 @@ export function VoiceTurnRecorder({
         );
         setState("ready");
       }
+    } finally {
+      uploading.current = false;
     }
+  }
+  function finish(intent: "save" | "create") {
+    if (uploading.current) return;
+    if (active) {
+      if (finishIntent.current || !recording.current || recording.current.state === "inactive") return;
+      finishIntent.current = intent;
+      recording.current?.stop();
+    } else void upload(intent);
   }
   async function discard() {
     setError("");
@@ -233,6 +272,7 @@ export function VoiceTurnRecorder({
       await queue.current;
       await deleteDraft(turnId);
       setDraft(undefined);
+      latestDraft.current = undefined;
       setState("idle");
       setDiscarding(false);
       setNotice(
@@ -274,6 +314,7 @@ export function VoiceTurnRecorder({
             <button
               className="button secondary"
               onClick={() => {
+                if (!recording.current || recording.current.state === "inactive") return;
                 if (state === "recording") {
                   recording.current?.pause();
                   setState("paused");
@@ -286,26 +327,40 @@ export function VoiceTurnRecorder({
               {state === "paused" ? <Play size={18} /> : <Pause size={18} />}
               {state === "paused" ? "Resume" : "Pause"}
             </button>
-            <button
+            {completion ? <>
+              {completion.canCreate && <button className="button" onClick={() => finish("create")}>
+                Make my book
+              </button>}
+              <button className={completion.canCreate ? "text-button" : "button"} onClick={() => finish("save")}>
+                Save for later
+              </button>
+            </> : <button
               className="button"
               onClick={() => recording.current?.stop()}
             >
               <Square size={17} />
               Finish this part
-            </button>
+            </button>}
           </div>
         </>
       ) : state === "ready" || state === "saving" ? (
         <>
           <audio controls src={url} aria-label="Your unsaved recording" />
-          <button
+          {completion ? <div className="button-row">
+            {completion.canCreate && <button className="button" disabled={state === "saving" || !draft} onClick={() => finish("create")}>
+              {state === "saving" ? "Saving your memory…" : "Make my book"}
+            </button>}
+            <button className={completion.canCreate ? "text-button" : "button"} disabled={state === "saving" || !draft} onClick={() => finish("save")}>
+              {state === "saving" ? "Saving your memory…" : "Save for later"}
+            </button>
+          </div> : <button
             className="button full"
             disabled={state === "saving" || !draft}
             onClick={() => void upload()}
           >
             <ShieldCheck size={20} />
             {state === "saving" ? "Saving your words…" : "Save this part"}
-          </button>
+          </button>}
           <p className="small muted">
             Your earlier recordings stay safe. This part is saved separately.
           </p>

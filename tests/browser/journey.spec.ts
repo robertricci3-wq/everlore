@@ -82,6 +82,7 @@ test("desktop: whole book, source view, revision, saved edition and matching dow
   await expect(
     page.getByRole("button", { name: "Next spread" }),
   ).toBeDisabled();
+  await page.getByText("Book options", { exact: true }).click();
   await page.getByRole("button", { name: "All pictures" }).click();
   await expect(page.locator(".contact-grid img")).toHaveCount(12);
   await page.screenshot({
@@ -94,15 +95,12 @@ test("desktop: whole book, source view, revision, saved edition and matching dow
   await expect(
     page.getByText("Source s1", { exact: true }).first(),
   ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Save this edition", exact: true })
-    .click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download review PDF" }).click();
+  await (await download).saveAs("work/evidence/Evermore-review-edition-1.pdf");
   await expect(
     page.getByRole("link", { name: "Download review PDF" }),
   ).toBeVisible();
-  const download = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Download review PDF" }).click();
-  await (await download).saveAs("work/evidence/Evermore-review-edition-1.pdf");
   await page
     .getByRole("button", { name: "Change something", exact: true })
     .click();
@@ -113,9 +111,12 @@ test("desktop: whole book, source view, revision, saved edition and matching dow
     page.getByText("Name corrected throughout the book.", { exact: false }),
   ).toBeVisible();
   await expect(page.locator(".reader-heading")).toContainText("Nora");
+  await page.locator(".reader-options .editions summary").click();
   await page.getByRole("button", { name: /Edition 1/ }).click();
   await expect(page.locator(".reader-heading")).toContainText("Nell");
   await page.reload();
+  await expect(page.locator(".reader-heading")).toContainText("Nell");
+  await page.getByRole("link", { name: "Return to current book" }).click();
   await expect(page.locator(".reader-heading")).toContainText("Nora");
   expect(errors).toEqual([]);
 });

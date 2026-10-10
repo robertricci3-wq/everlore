@@ -64,6 +64,7 @@ import {
   latestStudio,
   confirmStudioSource,
   confirmStudioHeart,
+  answerStudioContinuity,
   approveStudioCast,
   approveStudioArt,
   queueRepair,
@@ -838,6 +839,9 @@ export function createApp(
   app.get("/api/families", auth, (req, res) =>
     res.json(familyVersions(store, owner(req).id)),
   );
+  app.post("/api/projects/:id/engine/continuity", auth, (req, res) => {
+    res.json(answerStudioContinuity(store, project(req).id, req.body));
+  });
   app.post("/api/projects/:id/engine/heart", auth, (req, res) => {
     confirmStudioHeart(store, project(req).id, req.body);
     res.json({ ok: true });

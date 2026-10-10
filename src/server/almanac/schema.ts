@@ -64,6 +64,35 @@ export function migrateAlmanac(db: DatabaseSync) {
       requestKey TEXT NOT NULL,sessionId TEXT NOT NULL REFERENCES almanac_sessions(id) ON DELETE CASCADE,
       PRIMARY KEY(ownerId,requestKey)
     );
+    CREATE TABLE IF NOT EXISTS almanac_consents(
+      id TEXT PRIMARY KEY,ownerId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      version TEXT NOT NULL,scope TEXT NOT NULL,text TEXT NOT NULL,acceptedAt TEXT NOT NULL,
+      UNIQUE(ownerId,version,scope)
+    );
+    CREATE TABLE IF NOT EXISTS almanac_creation_requests(
+      id TEXT PRIMARY KEY,ownerId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sessionId TEXT NOT NULL REFERENCES almanac_sessions(id) ON DELETE CASCADE,
+      requestKey TEXT NOT NULL,requestHash TEXT NOT NULL,consentVersion TEXT NOT NULL,
+      selection TEXT NOT NULL,profile TEXT NOT NULL,continuity TEXT NOT NULL,
+      status TEXT NOT NULL,sourceId TEXT REFERENCES almanac_sources(id) ON DELETE SET NULL,
+      projectId TEXT REFERENCES projects(id) ON DELETE SET NULL,
+      historicalProjectId TEXT,
+      studioJobId TEXT REFERENCES studio_jobs(id) ON DELETE SET NULL,
+      pauseReason TEXT,error TEXT,leaseToken TEXT,leaseUntil INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,updatedAt TEXT NOT NULL,lastAttemptAt INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(ownerId,requestKey)
+    );
+    CREATE INDEX IF NOT EXISTS almanac_creation_session ON almanac_creation_requests(sessionId,createdAt);
+    CREATE TABLE IF NOT EXISTS almanac_creation_keys(
+      ownerId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      requestKey TEXT NOT NULL,requestHash TEXT NOT NULL,
+      creationId TEXT NOT NULL REFERENCES almanac_creation_requests(id) ON DELETE CASCADE,
+      PRIMARY KEY(ownerId,requestKey)
+    );
+    CREATE TABLE IF NOT EXISTS almanac_journey_events(
+      sessionId TEXT NOT NULL REFERENCES almanac_sessions(id) ON DELETE CASCADE,
+      event TEXT NOT NULL,createdAt TEXT NOT NULL,PRIMARY KEY(sessionId,event)
+    );
   `);
   const columns = db.prepare("PRAGMA table_info(almanac_sessions)").all();
   if (!columns.some((column) => column.name === "purpose"))
@@ -72,4 +101,8 @@ export function migrateAlmanac(db: DatabaseSync) {
     );
   if (!columns.some((column) => column.name === "guideProfile"))
     db.exec("ALTER TABLE almanac_sessions ADD COLUMN guideProfile TEXT");
+  const creationColumns = db.prepare("PRAGMA table_info(almanac_creation_requests)").all();
+  if (!creationColumns.some(column => column.name === "historicalProjectId"))
+    db.exec("ALTER TABLE almanac_creation_requests ADD COLUMN historicalProjectId TEXT");
+  db.exec("UPDATE almanac_creation_requests SET historicalProjectId=projectId WHERE historicalProjectId IS NULL AND projectId IS NOT NULL");
 }

@@ -90,8 +90,26 @@ import {
   canAssembleReviewCopy,
   notWorse,
 } from "./editorial.js";
+import {
+  ContinuityMode,
+  PinnedContinuity,
+  type ContinuityState,
+} from "../../shared/continuity.js";
+import {
+  ContinuityAnswer,
+  continuityFamilies,
+  pinStudioContinuity,
+  resolveContinuity,
+  rememberContinuityCast,
+  rememberStoryContinuity,
+  type ContinuityResolution,
+  inheritedContinuityBindings,
+} from "./continuity.js";
+export { pinStudioContinuity } from "./continuity.js";
 
 interface State {
+  continuity?: ContinuityState;
+  continuityBindings?: ContinuityResolution["bindings"];
   source?: TranscriptDocument;
   sourceApproved?: boolean;
   heart?: Heart;
@@ -101,6 +119,7 @@ interface State {
   selectedConceptId?: string;
 }
 interface RequestData {
+  continuity?: PinnedContinuity;
   strictCostGuard?: boolean;
   engineProfile?: Profile;
   autonomous?: boolean;
@@ -254,6 +273,8 @@ export function queueStudio(
   project: ProjectRow,
   input: unknown,
   config: EngineConfig,
+  pinnedProfile?: Profile,
+  pinnedContinuity?: PinnedContinuity,
 ) {
   const body = z
     .object({
@@ -262,6 +283,7 @@ export function queueStudio(
       legacyWish: z.string().trim().max(1000).default(""),
       familyVersionId: z.string().nullable().default(null),
       autonomous: z.boolean().default(true),
+      continuityMode: ContinuityMode.optional(),
     })
     .parse(input);
   return store.transaction(() => {
@@ -285,6 +307,17 @@ export function queueStudio(
       );
     if (body.familyVersionId)
       family(store, project.ownerId, body.familyVersionId);
+    const continuity = pinnedContinuity
+      ? PinnedContinuity.parse(pinnedContinuity)
+      : body.continuityMode
+        ? pinStudioContinuity(
+            store,
+            project.ownerId,
+            body.continuityMode,
+            body.familyVersionId,
+          )
+        : undefined;
+    if (continuity) continuityFamilies(store, project.ownerId, continuity);
     return insertJob(
       store,
       project,
@@ -292,6 +325,10 @@ export function queueStudio(
         consent: body,
         familyVersionId: body.familyVersionId,
         autonomous: body.autonomous,
+        ...(pinnedProfile
+          ? { engineProfile: verifyProfile(pinnedProfile) }
+          : {}),
+        ...(continuity ? { continuity } : {}),
       },
       {
         source: project.transcript
@@ -460,7 +497,100 @@ export function approveStudioCast(
     );
     for (const ref of refs)
       store.run("INSERT INTO family_assets VALUES(?,?)", familyId, ref.hash);
+    if (state.source)
+      rememberContinuityCast(
+        store,
+        owner,
+        familyId,
+        world,
+        state.source,
+        state.continuityBindings ??
+          inheritedContinuityBindings(
+            store,
+            state.familyVersionId,
+            world,
+            state.source,
+          ),
+      );
     return { ...state, castApproved: true, familyVersionId: familyId };
+  });
+}
+export function answerStudioContinuity(
+  store: Store,
+  projectId: string,
+  input: unknown,
+) {
+  const body = ContinuityAnswer.parse(input);
+  return store.transaction(() => {
+    const job = latestStudio(store, projectId);
+    if (!job) throw new EngineError("This story is no longer available.");
+    const state = JSON.parse(job.state) as State;
+    const prior = state.continuity?.responses[body.questionId];
+    if (prior) {
+      if (
+        canonical(prior) !==
+        canonical({
+          answerId: body.answerId,
+          key: body.key,
+          ...(body.text ? { text: body.text } : {}),
+        })
+      )
+        throw new EngineError(
+          "This question already has a saved answer. Reopen your story.",
+        );
+      return { ok: true };
+    }
+    const question = state.continuity?.questions.find(
+      (q) => q.id === body.questionId,
+    );
+    if (job.status !== "awaiting_continuity" || !question || !state.continuity)
+      throw new EngineError("This question has changed. Reopen your story.");
+    if (
+      Object.values(state.continuity.responses).some(
+        (answer) => answer.key === body.key,
+      )
+    )
+      throw new EngineError("That answer key belongs to another question.");
+    if (
+      !(question.allowUnspecified && body.answerId === "unspecified") &&
+      !question.options.some((o) => o.id === body.answerId)
+    )
+      throw new EngineError("Choose one of the saved answers.");
+    if (
+      question.kind === "relationship" &&
+      body.answerId === "answer" &&
+      !body.text?.trim()
+    )
+      throw new EngineError(
+        "Add a short answer, or choose that you are not sure.",
+      );
+    state.continuity.responses[question.id] = {
+      answerId: body.answerId,
+      key: body.key,
+      ...(body.text ? { text: body.text } : {}),
+    };
+    if (question.kind === "relationship" && state.heart) {
+      const questionId = question.id.slice("relationship-".length);
+      const answer =
+        body.answerId === "unspecified"
+          ? "The family is unsure. Keep this relationship unspecified; do not invent an answer."
+          : `Family clarification: ${body.text}`;
+      state.heart.questions = state.heart.questions.map((q) =>
+        q.id === questionId ? { ...q, answer, essential: false } : q,
+      );
+      if (body.answerId === "unspecified")
+        state.heart.sensitiveBoundaries.push(answer);
+    }
+    const pending = state.continuity.questions.some(
+      (q) => !state.continuity!.responses[q.id],
+    );
+    store.run(
+      "UPDATE studio_jobs SET state=?,status=?,error=NULL,leaseToken=NULL,leaseUntil=0 WHERE id=?",
+      JSON.stringify(state),
+      pending ? "awaiting_continuity" : "queued",
+      job.id,
+    );
+    return { ok: true };
   });
 }
 export function approveStudioArt(
@@ -701,6 +831,26 @@ export function studioView(store: Store, projectId: string): StudioView | null {
       );
   const heart = state.heart ?? studioCached<Heart>(store, job.id, "heart");
   const scenes = studioCached<Snapshot["scenes"]>(store, job.id, "scenes");
+  const progressArt = Array.from({ length: 12 }, (_, i) => ({
+    spread: i + 1,
+    artHash:
+      studioCached<string>(
+        store,
+        job.id,
+        `accepted_picture_meaning_v2_${i + 1}`,
+      ) ??
+      studioCached<string>(
+        store,
+        job.id,
+        `accepted_picture_meaning_v1_${i + 1}`,
+      ) ??
+      studioCached<string>(
+        store,
+        job.id,
+        `accepted_picture_evidence_v1_${i + 1}`,
+      ) ??
+      studioCached<string>(store, job.id, `accepted_picture_${i + 1}`),
+  })).find((picture) => picture.artHash);
   const preview =
     job.status === "awaiting_art" && accepted && heart
       ? {
@@ -731,6 +881,31 @@ export function studioView(store: Store, projectId: string): StudioView | null {
         }
       : null;
   return {
+    ...(progressArt?.artHash
+      ? {
+          progressPreview: {
+            artHash: progressArt.artHash,
+            alt:
+              scenes?.scenes[progressArt.spread - 1]?.action ??
+              "An illustration from your story",
+          },
+        }
+      : {}),
+    ...(state.continuity
+      ? {
+          continuity: {
+            status: state.continuity.questions.some(
+              (q) => !state.continuity!.responses[q.id],
+            )
+              ? ("needs_identity" as const)
+              : ("resolved" as const),
+            question:
+              state.continuity.questions.find(
+                (q) => !state.continuity!.responses[q.id],
+              ) ?? null,
+          },
+        }
+      : {}),
     id: job.id,
     status: job.status,
     stage: job.stage,
@@ -1084,7 +1259,11 @@ export async function runStudio(
             ? error
             : new StudioPreDispatchPause(error.message);
         if (request.lab && kind !== "local")
-          store.run("DELETE FROM studio_steps WHERE jobId=? AND stage=? AND state='started'", job.id, name);
+          store.run(
+            "DELETE FROM studio_steps WHERE jobId=? AND stage=? AND state='started'",
+            job.id,
+            name,
+          );
         // Nested local orchestration must not replace the actual blocked stage.
         if (!stopped.checkpointRecorded) {
           recordStudioCheckpoint(store, job.id, name, inputHash, stopped);
@@ -1276,11 +1455,35 @@ export async function runStudio(
           (d) => d.kind === "blocking_relationship",
         );
         if (blocked.length) {
-          pause(
-            "needs_attention",
-            "A family relationship needs clarification: " +
-              blocked.map((d) => d.decision).join(" "),
-          );
+          state.heart = heart;
+          state.continuity ??= { questions: [], responses: {} };
+          for (const decision of blocked) {
+            const original = pending.find((q) => q.id === decision.id)!;
+            const questionId = `relationship-${original.id}`;
+            if (!state.continuity.questions.some((q) => q.id === questionId))
+              state.continuity.questions.push({
+                id: questionId,
+                kind: "relationship",
+                prompt: original.question,
+                options: [{ id: "answer", label: "Add a short answer" }],
+                allowUnspecified: true,
+              });
+          }
+          // Preserve nonblocking editorial decisions too; resuming never repeats
+          // the paid question classifier or asks a family to review the whole heart.
+          heart.questions = heart.questions.map((q) => {
+            const decision = resolution.decisions.find(
+              (d) => d.id === q.id && d.kind !== "blocking_relationship",
+            );
+            return decision
+              ? {
+                  ...q,
+                  essential: false,
+                  answer: `Engine editorial decision (${decision.kind}): ${decision.decision}`,
+                }
+              : q;
+          });
+          pause("awaiting_continuity");
           return true;
         }
         heart.questions = heart.questions.map((q) => {
@@ -1381,9 +1584,45 @@ export async function runStudio(
       pause("needs_editor", planningIssues.join(" "));
       return true;
     }
-    const inherited = request.familyVersionId
-      ? family(store, project.ownerId, request.familyVersionId)
-      : null;
+    let continuityResolution: ContinuityResolution | undefined;
+    if (request.continuity && !seed) {
+      state.continuity ??= { questions: [], responses: {} };
+      const candidate = await step(
+        "continuity_world_candidate_v1",
+        { heart, plan, continuity: request.continuity },
+        () =>
+          provider.structured(
+            "world",
+            VisualWorld,
+            `${ART_SYSTEM}\n${instructions.world}\nCreate a cast for THIS source and story only. Do not include absent relatives. Names, relationships and depicted ages come from the source; leave an unknown numeric age null. Approved recurring designs will be applied separately.`,
+            { heart, plan },
+          ),
+        "text",
+      );
+      continuityResolution = resolveContinuity(
+        store,
+        project.ownerId,
+        request.continuity,
+        candidate,
+        state.source!,
+        state.continuity,
+      );
+      if (continuityResolution.question) {
+        if (
+          !state.continuity.questions.some(
+            (q) => q.id === continuityResolution!.question!.id,
+          )
+        )
+          state.continuity.questions.push(continuityResolution.question);
+        pause("awaiting_continuity");
+        return true;
+      }
+      state.continuityBindings = continuityResolution.bindings;
+    }
+    const inherited =
+      !request.continuity && request.familyVersionId
+        ? family(store, project.ownerId, request.familyVersionId)
+        : null;
     const world = await step(
       "world",
       {
@@ -1395,6 +1634,7 @@ export async function runStudio(
       async () => {
         let w =
           seed?.world ??
+          continuityResolution?.world ??
           inherited?.world ??
           (await provider.structured(
             "world",
@@ -1438,7 +1678,7 @@ export async function runStudio(
         }
         return VisualWorld.parse(w);
       },
-      seed || inherited ? "local" : "text",
+      seed || inherited || continuityResolution ? "local" : "text",
     );
     type Candidate = {
       manuscript: Snapshot["manuscript"];
@@ -1922,6 +2162,17 @@ export async function runStudio(
       return null;
     };
     const buildReferences = async () => {
+      if (continuityResolution) {
+        for (const prior of continuityResolution.referenceFamilies)
+          importFamilyReferences(
+            store,
+            job.projectId,
+            prior.id,
+            prior.references,
+          );
+        if (continuityResolution.reuseFamilyVersionId)
+          return continuityResolution.referenceFamilies[0].references;
+      }
       if (seed && !inherited && request.repair?.kind !== "character")
         return seed.references;
       if (inherited && request.repair?.kind !== "character") {
@@ -2003,7 +2254,15 @@ export async function runStudio(
                 ? seed.references.map((ref) =>
                     store.readAsset(job.projectId, ref.hash),
                   )
-                : [],
+                : continuityResolution
+                  ? [
+                      ...new Set(
+                        continuityResolution.referenceFamilies.flatMap((f) =>
+                          f.references.map((r) => r.hash),
+                        ),
+                      ),
+                    ].map((digest) => store.readAsset(job.projectId, digest))
+                  : [],
             );
       if (!first) return [];
       const second = await paint(
@@ -2110,6 +2369,10 @@ export async function runStudio(
       state.castApproved = true;
       state.familyVersionId = request.familyVersionId;
     }
+    if (continuityResolution?.reuseFamilyVersionId) {
+      state.castApproved = true;
+      state.familyVersionId = continuityResolution.reuseFamilyVersionId;
+    }
     if (request.autonomous && !state.castApproved && !artNotes.length) {
       state.castApproved = true;
       const familyId = id(),
@@ -2134,6 +2397,20 @@ export async function runStudio(
             familyId,
             ref.hash,
           );
+        rememberContinuityCast(
+          store,
+          project.ownerId,
+          familyId,
+          world,
+          state.source!,
+          state.continuityBindings ??
+            inheritedContinuityBindings(
+              store,
+              state.familyVersionId,
+              world,
+              state.source!,
+            ),
+        );
         state.familyVersionId = familyId;
         store.run(
           "UPDATE studio_jobs SET state=? WHERE id=?",
@@ -2428,6 +2705,14 @@ export async function runStudio(
         book.title,
         job.projectId,
       );
+      if (state.familyVersionId)
+        rememberStoryContinuity(
+          store,
+          job.projectId,
+          book.revision,
+          state.familyVersionId,
+          world,
+        );
       if (editionBytes) {
         const pdfHash = store.putAsset(job.projectId, editionBytes, "pdf");
         store.run(
@@ -2456,7 +2741,8 @@ export async function runStudio(
       pause(
         error instanceof LabPaused ||
           (request.lab && error instanceof StudioPreDispatchPause)
-          ? "lab_paused" : "needs_attention",
+          ? "lab_paused"
+          : "needs_attention",
         error instanceof EngineError ||
           error instanceof StudioPreDispatchPause ||
           error instanceof ProviderRequestError ||

@@ -39,12 +39,17 @@ export function latestPrintBundle(
   s: Store,
   editionId: string,
 ): PrintBundle | null {
-  migrate(s);
+  // Availability checks must not prepare assets or write schema on a GET.
+  const versioned = s.one(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='print_bundle_versions'",
+  );
   const row =
-    s.one<{ body: string }>(
-      "SELECT body FROM print_bundle_versions WHERE editionId=? ORDER BY rowid DESC LIMIT 1",
-      editionId,
-    ) ??
+    (versioned
+      ? s.one<{ body: string }>(
+          "SELECT body FROM print_bundle_versions WHERE editionId=? ORDER BY rowid DESC LIMIT 1",
+          editionId,
+        )
+      : undefined) ??
     s.one<{ body: string }>(
       "SELECT body FROM print_bundles WHERE editionId=?",
       editionId,

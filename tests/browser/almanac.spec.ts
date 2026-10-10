@@ -28,12 +28,8 @@ test("almanac: 32 invitations, recoverable text, finished telling, hidden pages 
   page.on("pageerror", (e) => errors.push(e.message));
   await page.setViewportSize({ width: 1440, height: 1000 });
   await family(page);
-  await expect(
-    page.getByRole("link", { name: "Tell this memory" }),
-  ).toHaveCount(1);
-  await expect(
-    page.getByRole("heading", { name: "The day we met", exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole("button", {name: "Save a memory", exact:true})).toBeVisible();
+  await expect(page.getByRole("button", {name: "Help me begin", exact:true})).toBeVisible();
   await expect(page.locator(".almanac-overview")).not.toBeVisible();
   await expect(
     page.getByRole("button", { name: "Arrange your topics" }),
@@ -44,13 +40,9 @@ test("almanac: 32 invitations, recoverable text, finished telling, hidden pages 
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Try another idea" }).click();
-  await expect(
-    page.getByRole("heading", {
-      name: "Something from our kitchen",
-      exact: true,
-    }),
-  ).toBeVisible();
+  await page.getByRole("button", { name: "Help me begin" }).click();
+  await page.getByRole("button", { name: "Another idea", exact:true }).click();
+  await expect(page.locator(".record-idea")).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -61,6 +53,7 @@ test("almanac: 32 invitations, recoverable text, finished telling, hidden pages 
     fullPage: true,
   });
   await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/#/collection");
   await page.getByText("Find a different memory", { exact: true }).click();
   await expect(page.locator(".almanac-overview>section")).toHaveCount(8);
   await expect(page.locator(".almanac-overview a")).toHaveCount(32);
@@ -108,6 +101,9 @@ test("almanac: 32 invitations, recoverable text, finished telling, hidden pages 
     page.getByRole("heading", { name: "Continue your story." }),
   ).toBeVisible();
   await page.locator(".almanac-drafts a").first().click();
+  await expect(page.getByRole("heading", {name:"A memory, kept."})).toBeVisible();
+  // Older interviews remain available without rewriting their sources.
+  await page.goto(`/#/interview/${sessionId}`);
   await expect(
     page.getByText("This telling is saved.", { exact: false }),
   ).toBeVisible();
@@ -124,7 +120,7 @@ test("almanac: 32 invitations, recoverable text, finished telling, hidden pages 
   ).json();
   expect(after.sourceRevisions).toHaveLength(1);
   expect(after.session.turns[0].transcript.rawText).toBe(source);
-  await page.goto("/#/shelf");
+  await page.goto("/#/collection");
   await page.getByText("Personalize your collection", { exact: true }).click();
   await page.getByRole("button", { name: "Arrange your topics" }).click();
   const topic = ALMANAC_PAGES[0].title;
@@ -211,6 +207,7 @@ test("a spoken-page naming session is recoverable and has a typed fallback", asy
   page,
 }) => {
   await family(page);
+  await page.goto("/#/collection");
   await page.getByText("Personalize your collection", { exact: true }).click();
   await page
     .getByRole("button", { name: "A page of my own", exact: true })
@@ -270,7 +267,7 @@ test("starting a memory prepares the recorder once, even when the opening-turn r
   page,
 }) => {
   await family(page);
-  await page.getByRole("link", { name: "Tell this memory" }).click();
+  await page.goto("/#/memory/people-how-we-met");
   await page.getByRole("checkbox").check();
   let loseReply = true;
   await page.route("**/api/interviews/*/turns", async (route) => {

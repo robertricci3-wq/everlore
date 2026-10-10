@@ -7,7 +7,8 @@ import {
   requireOperator,
 } from "../access.js";
 import { isRecoveryLocked } from "../recovery-lock.js";
-import { activeProfile } from "../lab/profiles.js";
+import { activeProfile, verifyProfile } from "../lab/profiles.js";
+import type { Profile } from "../../shared/profile.js";
 import {
   availability,
   ProviderRequestError,
@@ -60,6 +61,7 @@ export function queueInterviewTranscription(
   turnId: string,
   input: unknown,
   config: EngineConfig,
+  pinnedProfile?: Profile,
 ) {
   z.object({ processWithOpenAI: z.literal(true) }).parse(input);
   const session = ownedSession(s, ownerId, sessionId),
@@ -93,7 +95,7 @@ export function queueInterviewTranscription(
     );
   ensureStudioBudgetRecords(s);
   return s.transaction(() => {
-    const profile = activeProfile(s, config);
+    const profile = pinnedProfile ? verifyProfile(pinnedProfile) : activeProfile(s, config);
     const bound = audioRequestCost(
       previous
         ? s.one<Transcription>(

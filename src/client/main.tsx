@@ -28,6 +28,7 @@ import "@fontsource/literata/400-italic.css";
 import "./styles.css";
 import "./Almanac.css";
 import { Almanac } from "./Almanac.js";
+import { MemoryComposer } from "./MemoryComposer.js";
 import { MemoryInvitationPage, MemoryInterview } from "./MemoryInterview.js";
 import { OperatorCosts } from "./OperatorCosts.js";
 import { api, deleteDraft, go, type SessionUser } from "./api.js";
@@ -127,6 +128,7 @@ function App() {
               <summary>Account</summary>
               <div className="account-menu-items">
                 <a href="#/orders">Your orders</a>
+                <a href="#/collection">Collection options</a>
                 {user.operator && (
                   <a href="#/operator/access">Manage service</a>
                 )}
@@ -174,9 +176,9 @@ function App() {
           )
         ) : path === "/lab" ? (
           <CreativeLab />
-        ) : ["/shelf", "/reading"].includes(path) ? (
+        ) : ["/shelf", "/reading", "/collection"].includes(path) ? (
           user?.kind === "private" ? (
-            <Almanac key={path} reading={path === "/reading"} />
+            <Almanac key={path} reading={path === "/reading"} organizing={path === "/collection"} />
           ) : (
             <Account login onDone={session} />
           )
@@ -196,6 +198,8 @@ function App() {
           ) : (
             <Account login onDone={session} />
           )
+        ) : path.startsWith("/tell/") ? (
+          user?.kind === "private" ? <MemoryComposer key={path} sessionId={path.split("/")[2]} user={user} /> : <Account login onDone={session} />
         ) : path.startsWith("/interview/") ? (
           user?.kind === "private" ? (
             <MemoryInterview
@@ -219,7 +223,7 @@ function App() {
         ) : path.startsWith("/order/") ? (
           <OrderPage id={path.split("/")[2].split("?")[0]} />
         ) : path.startsWith("/story/") ? (
-          <Project key={path.split("/")[2]} projectId={path.split("/")[2]} />
+          <Project key={path} projectId={path.split("/")[2]} editionId={path.split("/")[3] === "edition" ? path.split("/")[4] : undefined} />
         ) : (
           <main className="narrow">
             <h1>Let’s find your story.</h1>
@@ -530,7 +534,7 @@ function Account({
     </main>
   );
 }
-function Project({ projectId }: { projectId: string }) {
+function Project({ projectId, editionId }: { projectId: string; editionId?: string }) {
   const [project, setProject] = useState<ProjectView>(),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -640,7 +644,7 @@ function Project({ projectId }: { projectId: string }) {
               <StoryStudio project={project} refresh={refresh} />
             </div>
           )}
-          <Reader project={project} refresh={refresh} />
+          <Reader project={project} refresh={refresh} editionId={editionId} />
         </>
       ) : (
         <section className="narrow project-state enter">

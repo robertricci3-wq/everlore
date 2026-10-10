@@ -191,6 +191,10 @@ Private family stories, original illustrated books, and a guarded purchase-to-pr
 
 Use Node.js 24 and pnpm 11.19.0. Run \`pnpm install --frozen-lockfile\`, then \`pnpm typecheck\`, \`pnpm lint\`, \`pnpm test\`, and \`pnpm build\`. Install Chromium with \`pnpm exec playwright install --with-deps chromium\` before \`pnpm test:e2e\`. Run \`pnpm start\` and open http://127.0.0.1:4317. Local offline development starts with generation and checkout disabled. Environment files are templates; the app does not automatically load them.
 
+## Family experience
+
+The default path is Record a memory → Make my book → Read → Send me this book. While generation is unavailable, the app truthfully offers Save a memory. Creation requests preserve selected recording turns, consent, source revisions, engine profiles and character versions. Source-evidenced recurring character identity is resolved privately; ambiguous people receive a short resumable question. Account contains collection and operator tools. One purchase action freezes the displayed edition before guarded checkout; no purchase occurs without payment confirmation.
+
 ## Hosted private pilot
 
 Deploy the provided Render blueprint as one Docker web service with its 10 GB persistent disk. The assigned HTTPS origin is read from RENDER_EXTERNAL_URL; set PUBLIC_ORIGIN only to override it. Keep CHECKOUT_ENABLED=false and DISABLE_WORKER=1 until private configuration and recovery verification are complete. No local family data should be copied to the public repository.

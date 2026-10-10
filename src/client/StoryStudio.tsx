@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ContinuityQuestion } from "../shared/continuity.js";
 import { ArrowRight, Sparkles } from "lucide-react";
 import type { ProjectView } from "../shared/contracts.js";
 
@@ -25,37 +26,23 @@ export function StudioStatus() {
   );
 }
 const stageName = (stage: string) => {
-  if (stage.startsWith("picture_"))
-    return `${stage.includes("review") ? "Checking illustration" : "Painting illustration"} ${stage.split("_")[1]} of 12`;
-  if (stage.startsWith("draft_") || stage.startsWith("refine_"))
-    return "Finding the telling that feels just right";
-  if (stage.startsWith("canon_"))
-    return "Painting your family’s recurring characters";
-  if (stage.startsWith("craft_") || stage.startsWith("revision_"))
-    return "Polishing the read-aloud story";
-  if (stage.startsWith("art_review") || stage === "whole_book_review")
-    return "Checking all twelve illustrations together";
-  if (stage.startsWith("heart_")) return "Checking the heart of your memory";
-  if (stage.startsWith("evidence_") || stage.startsWith("editorial_"))
-    return "Checking the story and its connection to your memory";
-  return (
-    (
-      {
-        transcription: "Listening to your memory",
-        heart: "Finding what you want to pass on",
-        concepts: "Exploring three ways to tell your story",
-        concept_review: "Choosing a story full of possibility",
-        story_plan: "Building anticipation, wonder and a meaningful ending",
-        world: "Imagining your family as animal characters",
-        scenes: "Planning the book’s visual journey",
-        architecture: "Finding the adventure in your memory",
-        manuscript: "Writing a story to read together",
-        character_reference: "Designing your story’s visual world",
-        accepted_manuscript: "Preparing the illustrations",
-      } as Record<string, string>
-    )[stage] ?? "Preparing your story"
-  );
+  if (stage === "transcription") return "Listening to your memory";
+  if (stage.startsWith("picture_") || stage.startsWith("canon_") || stage.startsWith("art_review") || ["character_reference", "whole_book_review"].includes(stage)) return "Illustrating your book";
+  return "Creating your story";
 };
+/* Internal stages stay internal; the customer sees a stable, honest summary. */
+export function IdentityQuestion({question, busy, act}: {question: ContinuityQuestion; busy: boolean; act: (path:string, body:object)=>Promise<void>}) {
+  const [text, setText] = useState("");
+  const key = useRef(crypto.randomUUID());
+  return <section className="identity-question">
+    <span className="eyebrow">ONE DETAIL BEFORE WE CONTINUE</span>
+    <h2>{question.prompt}</h2>
+    {question.kind === "relationship" && <label>Your answer<textarea rows={2} value={text} maxLength={1500} onChange={(e) => setText(e.target.value)}/></label>}
+    <div className="memory-choices">{question.options.map((option) => <button key={option.id} className={option.id === "unspecified" ? "text-button" : "button secondary identity-choice"} disabled={busy || (option.id === "answer" && !text.trim())} onClick={() => void act("/continuity", {questionId:question.id, answerId:option.id, key:key.current, ...(option.id === "answer" ? {text} : {})})}><span>{option.label}</span>{option.detail && <small>{option.detail}</small>}</button>)}</div>
+    {question.allowUnspecified && !question.options.some((o) => o.id === "unspecified") && <button className="text-button" disabled={busy} onClick={() => void act("/continuity", {questionId:question.id, answerId:"unspecified", key:key.current})}>I’m not sure</button>}
+    <p className="small muted">We’ll keep your original memory as you told it.</p>
+  </section>;
+}
 export function StoryStudio({
   project,
   refresh,
@@ -114,9 +101,7 @@ export function StoryStudio({
   }
   return (
     <section className="story-studio">
-      <span className="eyebrow">
-        <Sparkles size={18} /> THE EVERLORE STORY STUDIO
-      </span>
+      {!run && <span className="eyebrow"><Sparkles size={18} /> YOUR MEMORY, MADE EXTRAORDINARY</span>}
       {!run && (
         <>
           <h2>
@@ -242,10 +227,11 @@ export function StoryStudio({
       {run && "kind" in run && (
         <StudioReviews run={run} projectId={project.id} busy={busy} act={act} />
       )}
+      {run && "continuity" in run && run.continuity?.question && <IdentityQuestion key={run.continuity.question.id} question={run.continuity.question} busy={busy} act={act}/>}
       {run && ["queued", "running"].includes(run.status) && (
         <div aria-live="polite">
           <h2>{stageName(run.stage)}</h2>
-          <p className="loading">Making room for wonder…</p>
+          {"progressPreview" in run && run.progressPreview && <figure className="progress-art"><img src={`/api/projects/${project.id}/art/${run.progressPreview.artHash}`} alt={run.progressPreview.alt}/><figcaption>A first look inside your book.</figcaption></figure>}
           <p>
             Each completed step is saved. You can leave this page and come back.
           </p>
@@ -345,7 +331,7 @@ export function StoryStudio({
           <p>Your original memory and completed work are saved.</p>
           {"kind" in run && run.recovery && (
             <p className="small muted">
-              Saved stage: {stageName(run.recovery.stage)}
+              {stageName(run.recovery.stage)}
             </p>
           )}
         </>

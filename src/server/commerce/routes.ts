@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { Store } from "../store.js";
 import { now, id, hash } from "../store.js";
 import { isRecoveryLocked } from "../recovery-lock.js";
-import { verifyStripeEvent } from "../payments/checkout.js";
+import { CheckoutError, verifyStripeEvent } from "../payments/checkout.js";
 import { commerceConfig, readiness, type CommerceSettings } from "./config.js";
 import {
   migrateCommerce,
@@ -159,6 +159,60 @@ export function installCommerceRoutes(
     if (!p) throw new Error("Book unavailable.");
     return p.id;
   };
+  const purchaseView = (pid: string, ownerId: string, eid: string | null) => {
+    const c = config(),
+      bundle = eid ? latestPrintBundle(s, eid) : null,
+      o = eid
+        ? s.one<OrderRow>(
+            "SELECT * FROM book_orders WHERE editionId=? AND ownerId=?",
+            eid,
+            ownerId,
+          )
+        : undefined;
+    return {
+      reasons: [
+        ...(isRecoveryLocked(s)
+          ? ["Ordering is paused while this restored service is reconciled."]
+          : []),
+        ...readiness(c),
+      ],
+      priceCents: c.priceCents || null,
+      currency: "USD",
+      shippingIncluded: true,
+      format: "210 mm square hardcover · 32 interior pages",
+      editionId: eid,
+      bundle,
+      order: o ? view(o) : null,
+    };
+  };
+  app.get("/api/projects/:id/purchase", auth, (req, res) => {
+    const pid = String(req.params.id),
+      current = s.one<{ revision: number; contentHash: string }>(
+        "SELECT p.revision,r.contentHash FROM projects p JOIN revisions r ON r.projectId=p.id AND r.revision=p.revision WHERE p.id=? AND p.ownerId=?",
+        pid,
+        owner(req).id,
+      );
+    if (!current)
+      return void res.status(404).json({ error: "Book unavailable." });
+    if (
+      (req.query.revision !== undefined &&
+        String(current.revision) !== req.query.revision) ||
+      (req.query.contentHash !== undefined &&
+        current.contentHash !== req.query.contentHash)
+    )
+      return void res
+        .status(409)
+        .json({
+          error: "This book has changed. Please reopen it before ordering.",
+        });
+    const edition = s.one<{ id: string }>(
+      "SELECT id FROM editions WHERE projectId=? AND revision=? AND contentHash=?",
+      pid,
+      current.revision,
+      current.contentHash,
+    );
+    res.json(purchaseView(pid, owner(req).id, edition?.id ?? null));
+  });
   app.get(
     "/api/projects/:id/editions/:editionId/purchase",
     auth,
@@ -171,27 +225,7 @@ export function installCommerceRoutes(
         return void res
           .status(404)
           .json({ error: "Saved edition unavailable." });
-      const c = config(),
-        bundle = latestPrintBundle(s, eid),
-        o = s.one<OrderRow>(
-          "SELECT * FROM book_orders WHERE editionId=? AND ownerId=?",
-          eid,
-          owner(req).id,
-        );
-      res.json({
-        reasons: [
-          ...(isRecoveryLocked(s)
-            ? ["Ordering is paused while this restored service is reconciled."]
-            : []),
-          ...readiness(c),
-        ],
-        priceCents: c.priceCents || null,
-        currency: "USD",
-        shippingIncluded: true,
-        format: "210 mm square hardcover · 32 interior pages",
-        bundle,
-        order: o ? view(o) : null,
-      });
+      res.json(purchaseView(pid, owner(req).id, eid));
     },
   );
   app.post(
@@ -266,10 +300,12 @@ export function installCommerceRoutes(
             config(),
           ),
         );
-      } catch {
+      } catch (cause) {
         res.status(409).json({
           error:
-            "This edition is not ready for checkout. Check its print preparation and store setup.",
+            cause instanceof CheckoutError
+              ? cause.message
+              : "This book is not ready to print yet. Your digital edition is saved; please try again later.",
         });
       }
     },

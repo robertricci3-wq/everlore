@@ -720,6 +720,7 @@ export function startTurn(
   ownerId: string,
   sessionId: string,
   input: unknown,
+  captureOnly = false,
 ) {
   const b = z
     .object({ key: keySchema, promptId: z.string().min(1).max(200) })
@@ -746,7 +747,9 @@ export function startTurn(
     const additional =
       row.purpose === "memory" &&
       b.promptId === "additional-memory" &&
-      next.action !== "wait";
+      // A saved recording is enough to add another segment. Capturing more
+      // must not require paying for the previous segment's transcription.
+      (next.action !== "wait" || captureOnly && !session.turns.some(turn => turn.status !== "skipped" && !turn.audio && !turn.transcript));
     if (!additional && (next.action !== "ask" || next.promptId !== b.promptId))
       throw new AccessError(
         409,
@@ -861,6 +864,7 @@ export function saveTurnAudio(
     };
     turn.status = "audio_saved";
     writeTurn(s, turn);
+    s.run("INSERT OR IGNORE INTO almanac_journey_events VALUES(?,'recording_saved',?)", sessionId, now());
     return turn;
   });
 }
@@ -946,6 +950,7 @@ export function saveTurnText(
     );
   return s.transaction(() => {
     const saved = persistTranscript(s, turn, transcript);
+    s.run("INSERT OR IGNORE INTO almanac_journey_events VALUES(?,'text_saved',?)", sessionId, now());
     // A manual answer can move past a failed request without replaying it.
     // Its call receipts and ambiguous reservation remain retained.
     s.run(
@@ -979,6 +984,7 @@ export function freezeSource(
   ownerId: string,
   sessionId: string,
   input: unknown,
+  onFrozen?: (source: { id: string; projectId: string }) => void,
 ) {
   const b = z
     .object({
@@ -1043,7 +1049,10 @@ export function freezeSource(
       sessionId,
       sourceHash,
     );
-    if (prior) return { ...prior, sessionId };
+    if (prior) {
+      onFrozen?.(prior);
+      return { ...prior, sessionId };
+    }
     const revision = s.one<{ n: number }>(
       "SELECT COALESCE(MAX(revision),0)+1 AS n FROM almanac_sources WHERE sessionId=?",
       sessionId,
@@ -1116,6 +1125,7 @@ export function freezeSource(
       projectId,
       at,
     );
+    onFrozen?.({ id: sid, projectId });
     return { id: sid, revision, sourceHash, projectId, sessionId };
   });
 }

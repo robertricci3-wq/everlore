@@ -5,6 +5,7 @@ import { VisualWorld, ReferenceAsset } from "../shared/studio.js";
 import { Store, canonical, hash, id, now, type ProjectRow } from "./store.js";
 import { fontBytes } from "./layout.js";
 import { InterviewArchive, exportInterviewArchive, validateInterviewArchive, importInterviewArchive } from "./almanac/archive.js";
+import { ContinuityArchive, exportContinuityArchive, validateContinuityArchive, restoreContinuityArchive, rememberStoryContinuity, rememberContinuityCast } from "./engine/continuity.js";
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const BookRow = z.object({
   revision: z.number().int().positive(),
@@ -60,6 +61,7 @@ const Bundle = z.object({
     .nullable(),
   checksum: digest,
   interview: InterviewArchive.optional(),
+  continuity: ContinuityArchive.optional(),
 });
 export function exportArchive(store: Store, project: ProjectRow) {
   const revisions = store
@@ -96,8 +98,8 @@ export function exportArchive(store: Store, project: ProjectRow) {
       ...a,
       base64: store.readAsset(project.id, a.hash).toString("base64"),
     }));
-  const current = revisions.find((r) => r.revision === project.revision)?.book
-    .production;
+  const currentBook = revisions.find((r) => r.revision === project.revision)?.book;
+  const current = currentBook?.production;
   const family = current
     ? { world: current.world, references: current.references, createdAt: now() }
     : null;
@@ -117,6 +119,7 @@ export function exportArchive(store: Store, project: ProjectRow) {
     editions,
     assets,
     family,
+    ...(current && currentBook ? { continuity: exportContinuityArchive(store, project.ownerId, project.id, current.familyVersionId, current.world, currentBook.transcript) } : {}),
     ...(exportInterviewArchive(store, project.id) ? { interview: exportInterviewArchive(store, project.id) } : {}),
   };
   const bundle = Bundle.parse({
@@ -201,6 +204,7 @@ export function restoreArchive(store: Store, ownerId: string, bytes: Buffer) {
     requireAsset(r.hash, "art");
     if (!r.approved) throw new Error("Family references were not approved");
   });
+  if (bundle.continuity) validateContinuityArchive(bundle.continuity, bundle.family?.world, bundle.revisions.find((r) => r.revision === bundle.project.revision)?.book.transcript);
   if (bundle.interview) validateInterviewArchive(bundle.interview, (digest, bytes) => {
     requireAsset(digest, "audio");
     if (assets.get(digest)!.bytes.length !== bytes) throw new Error("Interview recording length mismatch");
@@ -277,6 +281,16 @@ export function restoreArchive(store: Store, ownerId: string, bytes: Buffer) {
       );
       for (const r of f.references)
         store.run("INSERT INTO family_assets VALUES(?,?)", familyId, r.hash);
+      if (bundle.continuity) {
+        restoreContinuityArchive(store, ownerId, familyId, bundle.continuity);
+        rememberStoryContinuity(store, projectId, bundle.project.revision, familyId, f.world);
+      } else {
+        const source = bundle.revisions.find((r) => r.revision === bundle.project.revision)?.book.transcript;
+        if (source) {
+          rememberContinuityCast(store, ownerId, familyId, f.world, source);
+          rememberStoryContinuity(store, projectId, bundle.project.revision, familyId, f.world);
+        }
+      }
     }
   });
   // Restoring never creates jobs or re-enables spending. Original snapshot IDs remain provenance.

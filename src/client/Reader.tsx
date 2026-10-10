@@ -8,7 +8,6 @@ import {
   Download,
   Grid2X2,
   Pencil,
-  Save,
   X,
 } from "lucide-react";
 import type {
@@ -18,13 +17,16 @@ import type {
 } from "../shared/contracts.js";
 import { api } from "./api.js";
 import { StudioRepair } from "./StudioReviews.js";
+import "./Reader.css";
 
 export function Reader({
   project,
   refresh,
+  editionId,
 }: {
   project: ProjectView;
   refresh: () => Promise<void>;
+  editionId?: string;
 }) {
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -33,30 +35,65 @@ export function Reader({
     [view, setView] = useState("book"),
     [modal, setModal] = useState(""),
     [kind, setKind] = useState("name"),
-    [person, setPerson] = useState("nell"),
+    [person, setPerson] = useState(project.book!.people[0]?.id ?? ""),
     [name, setName] = useState(""),
     [detail, setDetail] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
+    [editionError, setEditionError] = useState(""),
     [snapshot, setSnapshot] = useState<{
       id: string;
       book: BookDocument;
     } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (editionId) {
+      void api<{ book: BookDocument }>(
+        `/projects/${project.id}/editions/${editionId}`,
+      )
+        .then(({ book }) => {
+          if (alive) {
+            setSnapshot({ id: editionId, book });
+            setPage(-1);
+            setEditionError("");
+          }
+        })
+        .catch(() => {
+          if (alive)
+            setEditionError(
+              "This saved edition could not be opened. Your current book is still available.",
+            );
+        });
+    } else {
+      setSnapshot(null);
+      setEditionError("");
+    }
+    return () => {
+      alive = false;
+    };
+  }, [editionId, project.id]);
   const book = snapshot?.book ?? project.book!;
   const art = (i: number) =>
     `/api/projects/${project.id}/art/${book.spreads[i].artHash}`;
   const selectedEdition = snapshot
     ? project.editions.find((e) => e.id === snapshot.id)
-    : project.editions.find((e) => e.revision === book.revision);
-  async function save() {
+    : project.editions.find(
+        (e) =>
+          e.revision === book.revision && e.contentHash === book.contentHash,
+      );
+  async function download() {
     setBusy(true);
     setError("");
     try {
-      await api(`/projects/${project.id}/editions`, {
-        baseRevision: book.revision,
-        contentHash: book.contentHash,
-      });
+      const edition = await api<EditionView>(
+        `/projects/${project.id}/editions`,
+        {
+          baseRevision: book.revision,
+          contentHash: book.contentHash,
+        },
+      );
+      location.assign(`/api/projects/${project.id}/editions/${edition.id}/pdf`);
       await refresh();
       setMessage(
         "This edition is saved. Its words, pictures, and review PDF are now fixed.",
@@ -102,18 +139,27 @@ export function Reader({
       setBusy(false);
     }
   }
-  async function openEdition(edition: EditionView) {
-    setError("");
-    try {
-      const data = await api<{ book: BookDocument }>(
-        `/projects/${project.id}/editions/${edition.id}`,
-      );
-      setSnapshot({ id: edition.id, book: data.book });
-      setPage(-1);
-    } catch (cause) {
-      setError((cause as Error).message);
-    }
+  function openEdition(edition: EditionView) {
+    location.hash = `/story/${project.id}/edition/${edition.id}`;
   }
+  if (editionId && snapshot?.id !== editionId) {
+    return (
+      <section className="reader-page">
+        {editionError ? (
+          <p className="alert" role="alert">
+            {editionError}
+          </p>
+        ) : (
+          <p role="status">Opening your saved edition…</p>
+        )}
+        <a href={`#/story/${project.id}`}>Read your current book</a>
+      </section>
+    );
+  }
+  const pendingChange =
+    !snapshot &&
+    (project.corrections.length > 0 ||
+      (!!project.engine && project.engine.status !== "complete"));
   return (
     <section className="reader-page enter">
       <div className="reader-heading">
@@ -129,38 +175,10 @@ export function Reader({
           {book.adaptation ? "Inspired by your family" : "Synthetic example"}
         </span>
       </div>
-      <div className="reader-tools">
-        <div className="segmented" aria-label="Reader views">
-          {[
-            ["book", "Book"],
-            ["text", "Read the words"],
-            ["grid", "All pictures"],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              className={view === id ? "selected" : ""}
-              onClick={() => setView(id)}
-            >
-              {id === "book" ? (
-                <BookOpen size={16} />
-              ) : id === "grid" ? (
-                <Grid2X2 size={16} />
-              ) : null}
-              {label}
-            </button>
-          ))}
-        </div>
-        <span className="small muted">
-          {snapshot ? "Saved edition" : "Working copy"} · Revision{" "}
-          {book.revision}
-        </span>
-      </div>
       {snapshot && (
         <div className="edition-banner">
           You’re reading a saved edition.{" "}
-          <button className="text-button" onClick={() => setSnapshot(null)}>
-            Return to current book
-          </button>
+          <a href={`#/story/${project.id}`}>Return to current book</a>
         </div>
       )}
       {error && !modal && (
@@ -332,121 +350,154 @@ export function Reader({
           ? "An imaginative story inspired by a family memory, with AI-generated illustrations. Scenes and dialogue may be invented. Your original recording is preserved."
           : "This is a synthetic story with designed sample illustrations. Human creative review is still pending."}
       </p>
-      {book.adaptation && (
-        <details className="source-details">
-          <summary>The heart of the story & what we imagined</summary>
-          <p>{book.adaptation.emotionalInheritance}</p>
-          <p>{book.adaptation.premise}</p>
-          <ul>
-            {book.adaptation.inventions.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        </details>
-      )}
-      {book.production && (
-        <details className="source-details">
-          <summary>The True Parts</summary>
-          <p>{book.production.manuscript.trueParts}</p>
-          <p className="small muted">
-            The original voice, the remembered details, and the imagined
-            adventure are kept together.
-          </p>
-        </details>
-      )}
-      {book.production && !snapshot && (
-        <StudioRepair project={project} refresh={refresh} />
-      )}
-      {selectedEdition && (
-        <Purchase projectId={project.id} editionId={selectedEdition.id} />
-      )}
-      <div className="book-actions">
-        {!snapshot && !book.production && (
-          <button
-            className="button secondary"
-            onClick={() => {
-              setError("");
-              setModal("correction");
-            }}
-          >
-            <Pencil size={18} /> Change something
-          </button>
-        )}
-        {selectedEdition ? (
-          <a
-            className="button"
-            href={`/api/projects/${project.id}/editions/${selectedEdition.id}/pdf`}
-          >
-            <Download size={19} /> Download review PDF
-          </a>
-        ) : (
-          <button
-            className="button"
-            disabled={busy || !!snapshot}
-            onClick={() => void save()}
-          >
-            <Save size={19} />
-            {busy ? "Saving your edition…" : "Save this edition"}
-          </button>
-        )}
-      </div>
-      <p className="small">
-        <a href={`/api/projects/${project.id}/archive`}>
-          Download a family archive
-        </a>{" "}
-        — original audio, source, artwork and saved editions. Keep this private
-        file somewhere safe.
-      </p>
-      <div className="below-book">
-        <div>
-          <h3>Made to be kept.</h3>
-          <p>
-            Save an edition to fix its words and pictures. You can return to it
-            even after making changes.
-          </p>
-          <p className="small muted">
-            Review PDFs are for reading and checking. Hardcover availability
-            and print preparation appear above for your saved edition.
-          </p>
-        </div>
-        <div className="editions">
-          <h3>Your saved editions</h3>
-          {project.editions.length ? (
-            project.editions.map((edition) => (
-              <button
-                key={edition.id}
-                onClick={() => void openEdition(edition)}
-              >
-                <BookOpen size={18} />
-                <span>
-                  Edition {edition.revision}
-                  <small>
-                    {new Date(edition.createdAt).toLocaleDateString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                    })}
-                  </small>
-                </span>
-                <ArrowRight size={17} />
-              </button>
-            ))
-          ) : (
-            <p className="muted">Your first edition is waiting to be saved.</p>
-          )}
-        </div>
-      </div>
-      {!!project.corrections.length && (
+      {!!project.corrections.length && !snapshot && (
         <div className="notice">
-          <strong>Waiting for editorial review</strong>
-          {project.corrections.map((c) => (
-            <p key={c.id}>{c.detail}</p>
+          <strong>Your requested changes are being reviewed</strong>
+          {project.corrections.map((correction) => (
+            <p key={correction.id}>{correction.detail}</p>
           ))}
           <p>
-            The requested changes have not been applied. A new edition cannot be
-            saved while corrections are pending.
+            This book has not changed yet. We’ll keep the current version
+            available while the changes are resolved.
           </p>
         </div>
       )}
+      <Purchase
+        key={`${project.id}:${snapshot?.id ?? book.contentHash}`}
+        projectId={project.id}
+        book={book}
+        editionId={snapshot?.id ?? selectedEdition?.id}
+        blockedReason={
+          pendingChange
+            ? "Your requested changes need to finish before ordering this version."
+            : undefined
+        }
+        refresh={refresh}
+      />
+      <details className="reader-options">
+        <summary>Book options</summary>
+        <div className="reader-options-content">
+          <div className="reader-tools">
+            <div className="segmented" aria-label="Reader views">
+              {[
+                ["book", "Book"],
+                ["text", "Read the words"],
+                ["grid", "All pictures"],
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  className={view === id ? "selected" : ""}
+                  onClick={() => {
+                    setView(id);
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  }}
+                >
+                  {id === "book" ? (
+                    <BookOpen size={16} />
+                  ) : id === "grid" ? (
+                    <Grid2X2 size={16} />
+                  ) : null}
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="small muted">
+              {snapshot ? "Saved edition" : "Working copy"} · Revision{" "}
+              {book.revision}
+            </span>
+          </div>
+          <div className="reader-secondary-actions">
+            {selectedEdition || snapshot ? (
+              <a
+                className="button secondary"
+                href={`/api/projects/${project.id}/editions/${snapshot?.id ?? selectedEdition!.id}/pdf`}
+              >
+                <Download size={18} /> Download review PDF
+              </a>
+            ) : (
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={() => void download()}
+              >
+                <Download size={18} />{" "}
+                {busy ? "Preparing your PDF…" : "Download review PDF"}
+              </button>
+            )}
+            {!snapshot && !book.production && (
+              <button
+                className="button secondary"
+                onClick={() => {
+                  setError("");
+                  setModal("correction");
+                }}
+              >
+                <Pencil size={18} /> Change something
+              </button>
+            )}
+          </div>
+          {book.production && !snapshot && (
+            <StudioRepair project={project} refresh={refresh} />
+          )}
+          {book.adaptation && (
+            <details className="source-details">
+              <summary>The heart of the story & what we imagined</summary>
+              <p>{book.adaptation.emotionalInheritance}</p>
+              <p>{book.adaptation.premise}</p>
+              <ul>
+                {book.adaptation.inventions.map((item, i) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {book.production && (
+            <details className="source-details">
+              <summary>The True Parts</summary>
+              <p>{book.production.manuscript.trueParts}</p>
+              <p className="small muted">
+                The original voice, the remembered details, and the imagined
+                adventure are kept together.
+              </p>
+            </details>
+          )}
+          <details className="source-details editions">
+            <summary>Saved editions · {project.editions.length}</summary>
+            <p>
+              Downloading or ordering keeps those exact words and pictures, even
+              if you make changes later.
+            </p>
+            {project.editions.length ? (
+              project.editions.map((edition) => (
+                <button key={edition.id} onClick={() => openEdition(edition)}>
+                  <BookOpen size={18} />
+                  <span>
+                    Edition {edition.revision}
+                    <small>
+                      {new Date(edition.createdAt).toLocaleDateString(
+                        undefined,
+                        { month: "short", day: "numeric" },
+                      )}
+                    </small>
+                  </span>
+                  <ArrowRight size={17} />
+                </button>
+              ))
+            ) : (
+              <p className="muted">
+                No editions saved yet. Your current book is kept here.
+              </p>
+            )}
+          </details>
+          <p className="small reader-archive">
+            <a href={`/api/projects/${project.id}/archive`}>
+              Download a family archive
+            </a>{" "}
+            — original audio, source, artwork and saved editions. Keep this
+            private file somewhere safe.
+          </p>
+        </div>
+      </details>
       {modal && (
         <div className="modal-backdrop">
           <section

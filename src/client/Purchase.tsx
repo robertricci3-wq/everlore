@@ -1,8 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { BookDocument, EditionView } from "../shared/contracts.js";
 import { api } from "./api.js";
+import "./Reader.css";
+
 type OrderView = {
   id: string;
   projectId: string;
+  editionId: string;
   status: string;
   amountCents: number;
   checkoutUrl: string | null;
@@ -24,6 +28,7 @@ type PurchaseView = {
   reasons: string[];
   priceCents: number | null;
   format: string;
+  editionId: string | null;
   bundle: {
     id: string;
     version: number;
@@ -55,90 +60,163 @@ const labels: Record<string, string> = {
 };
 export function Purchase({
   projectId,
+  book,
   editionId,
+  blockedReason,
+  refresh,
 }: {
   projectId: string;
-  editionId: string;
+  book: BookDocument;
+  editionId?: string;
+  blockedReason?: string;
+  refresh: () => Promise<void>;
 }) {
   const [data, setData] = useState<PurchaseView | null>(null),
     [busy, setBusy] = useState(false),
     [page, setPage] = useState(0),
     [error, setError] = useState("");
-  const url = `/projects/${projectId}/editions/${editionId}`;
+  const inFlight = useRef(false),
+    savedEdition = useRef<string | null>(null);
+  const projectUrl = `/projects/${projectId}`;
+  const url = editionId
+    ? `${projectUrl}/editions/${editionId}/purchase`
+    : `${projectUrl}/purchase?revision=${book.revision}&contentHash=${encodeURIComponent(book.contentHash)}`;
   useEffect(() => {
     let alive = true;
-    void api<PurchaseView>(`${url}/purchase`)
-      .then((v) => {
-        if (alive) setData(v);
+    setData(null);
+    void api<PurchaseView>(url)
+      .then((value) => {
+        if (alive) setData(value);
       })
-      .catch(() => {
-        if (alive) setError("Hardcover availability could not be loaded.");
+      .catch((cause) => {
+        if (alive)
+          setError(
+            cause instanceof Error &&
+              cause.message.startsWith("This book has changed.")
+              ? cause.message
+              : "Hardcover availability could not be loaded. Your digital book is still available.",
+          );
       });
     return () => {
       alive = false;
     };
   }, [url]);
-  const act = async (checkout: boolean) => {
+  async function checkout() {
+    if (inFlight.current || !data || data.reasons.length || blockedReason)
+      return;
+    inFlight.current = true;
     setBusy(true);
     setError("");
     try {
-      if (checkout) {
-        const o = await api<OrderView>(`${url}/checkout`, {});
-        location.hash = `/order/${o.id}`;
-        if (o.checkoutUrl) location.assign(o.checkoutUrl);
-      } else {
-        await api(`${url}/prepare-print`, {});
-        setData(await api<PurchaseView>(`${url}/purchase`));
+      let eid = editionId ?? data.editionId ?? savedEdition.current;
+      if (!eid) {
+        const edition = await api<EditionView>(`${projectUrl}/editions`, {
+          baseRevision: book.revision,
+          contentHash: book.contentHash,
+        });
+        eid = edition.id;
+        savedEdition.current = eid;
       }
-    } catch (e) {
-      setError((e as Error).message);
+      // The server prepares and verifies this frozen edition before creating
+      // checkout. Retrying after a lost reply reuses the existing order.
+      const order = await api<OrderView>(
+        `${projectUrl}/editions/${eid}/checkout`,
+        {},
+      );
+      location.hash = `/order/${order.id}`;
+      if (order.checkoutUrl) location.assign(order.checkoutUrl);
+    } catch (cause) {
+      setError(
+        cause instanceof TypeError || cause instanceof SyntaxError
+          ? "We couldn’t confirm checkout. Your digital book is still here while we check for an existing order."
+          : (cause as Error).message,
+      );
+      // A checkout may exist even when its reply was lost. Recover the view,
+      // never infer failure or open a replacement payment attempt.
+      try {
+        const eid = editionId ?? savedEdition.current ?? data.editionId;
+        setData(
+          await api<PurchaseView>(
+            eid ? `${projectUrl}/editions/${eid}/purchase` : url,
+          ),
+        );
+      } catch {
+        /* Keep the original failure visible. */
+      }
     } finally {
+      inFlight.current = false;
       setBusy(false);
+      void refresh().catch(() => undefined);
     }
-  };
+  }
+  const unavailable = data?.reasons.length
+    ? "Hardcover ordering isn’t available yet."
+    : blockedReason;
   return (
-    <section className="story-studio">
-      <h2>A book to hold. A story to keep.</h2>
-      <p>{data?.format ?? "Your illustrated family story, as a hardcover."}</p>
-      {error && <p role="alert">{error}</p>}
+    <section className="purchase-card" aria-label="Your hardcover book">
+      <div className="purchase-copy">
+        <h2>A book to hold.</h2>
+        <p>
+          {data?.format ?? "Your illustrated family story, as a hardcover."}
+        </p>
+      </div>
+      {error && (
+        <p className="alert" role="alert">
+          {error}
+        </p>
+      )}
       {data?.order ? (
         <a className="button" href={`#/order/${data.order.id}`}>
           View your order
         </a>
       ) : (
         <>
+          {!data && !error && (
+            <p role="status">Checking hardcover availability…</p>
+          )}
           {data?.priceCents ? (
-            <p>
+            <p className="purchase-price">
               {money(data.priceCents)} · standard US shipping included · tax
               calculated at checkout
             </p>
-          ) : (
-            <p>Hardcover pricing is being prepared.</p>
-          )}
-          {data?.reasons.length ? (
-            <p>{data.reasons[0]} Your digital edition remains available.</p>
           ) : null}
-          {data?.bundle?.issues.map((x) => (
-            <p key={x}>{x}</p>
-          ))}
-          {data && !data.bundle?.ready && (
-            <button
-              className="button secondary"
-              disabled={busy}
-              onClick={() => void act(false)}
-            >
-              {busy
-                ? "Preparing…"
-                : data.bundle
-                  ? "Check print readiness again"
-                  : "Prepare this edition for print"}
-            </button>
+          {unavailable ? (
+            <p className="purchase-unavailable">
+              {unavailable} Your digital book is here to keep reading.
+            </p>
+          ) : (
+            data && (
+              <>
+                <button
+                  className="button"
+                  disabled={busy || !data.priceCents}
+                  onClick={() => void checkout()}
+                >
+                  {busy
+                    ? "Preparing your book…"
+                    : `Send me this book · ${money(data.priceCents ?? 0)}`}
+                </button>
+                <p className="small purchase-note">
+                  We’ll save these exact words and pictures and check the print
+                  quality. Enter your address and confirm payment securely with
+                  Stripe.
+                </p>
+              </>
+            )
+          )}
+          {!!data?.bundle?.issues.length && (
+            <details className="purchase-details">
+              <summary>This edition needs print refinements</summary>
+              {data.bundle.issues.map((issue) => (
+                <p key={issue}>{issue}</p>
+              ))}
+            </details>
           )}
           {data?.bundle?.version === 2 && (
-            <details>
+            <details className="purchase-details">
               <summary>Preview the printed edition</summary>
               <img
-                style={{ width: "100%", maxWidth: 600, display: "block" }}
+                className="print-preview"
                 alt={`Printed book page ${page + 1}`}
                 src={`/api/projects/${projectId}/print/${data.bundle.id}/preview/${page}`}
                 loading="lazy"
@@ -146,20 +224,22 @@ export function Purchase({
               <p>
                 Page {page + 1} of {data.bundle.pageCount}
               </p>
-              <button
-                className="button secondary"
-                disabled={page === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-              >
-                Previous page
-              </button>{" "}
-              <button
-                className="button secondary"
-                disabled={page >= data.bundle.pageCount - 1}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next page
-              </button>
+              <div className="purchase-preview-navigation">
+                <button
+                  className="button secondary"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                >
+                  Previous page
+                </button>
+                <button
+                  className="button secondary"
+                  disabled={page >= data.bundle.pageCount - 1}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next page
+                </button>
+              </div>
               <p>
                 <a
                   href={`/api/projects/${projectId}/print/${data.bundle.id}/pdf`}
@@ -171,21 +251,6 @@ export function Purchase({
               </p>
             </details>
           )}
-          {data?.bundle?.ready && data.reasons.length === 0 && (
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() => void act(true)}
-            >
-              {busy
-                ? "Opening checkout…"
-                : `Send me this book · ${money(data.priceCents!)}`}
-            </button>
-          )}
-          <p className="small">
-            Secure payment and delivery address entry through Stripe. We print
-            the exact saved edition shown here.
-          </p>
         </>
       )}
     </section>
@@ -312,15 +377,20 @@ export function OrderPage({ id }: { id: string }) {
               Continue secure checkout
             </a>
           )}
-          <button
-            className="button secondary"
-            disabled={busy}
-            onClick={() => void refresh()}
-          >
-            {busy ? "Checking…" : "Check payment or shipping status"}
-          </button>
+          <details className="order-status-details">
+            <summary>Check for an update</summary>
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={() => void refresh()}
+            >
+              {busy ? "Checking…" : "Check payment or shipping status"}
+            </button>
+          </details>
           <p>
-            <a href={`#/story/${data.projectId}`}>Return to your book</a>
+            <a href={`#/story/${data.projectId}/edition/${data.editionId}`}>
+              Read your ordered edition
+            </a>
           </p>
           <p>
             <a href="#/orders">All your orders</a>

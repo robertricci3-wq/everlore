@@ -31,6 +31,7 @@ import {
   retryInterviewTranscription,
 } from "./transcription.js";
 import { AccessError } from "../access.js";
+import { journeySetup, startJourney, createJourney, journeyView, recordJourneyStarted, journeyMetrics } from "./journey.js";
 
 export function installAlmanacRoutes(
   app: Express,
@@ -44,6 +45,27 @@ export function installAlmanacRoutes(
   const { auth, owner, config } = options;
   const user = (req: Request) => owner(req).id;
   const param = (req: Request, name: string) => String(req.params[name]);
+  app.get("/api/journey/setup", auth, (req, res) =>
+    res.json(journeySetup(s, user(req), config)),
+  );
+  app.post("/api/journey/start", auth, (req, res) =>
+    res.status(201).json(startJourney(s, user(req), req.body, config)),
+  );
+  app.get("/api/journey/:sessionId", auth, (req, res) =>
+    res.json(journeyView(s, user(req), param(req, "sessionId"), config)),
+  );
+  app.post("/api/journey/:sessionId/create", auth, (req, res) =>
+    res.status(202).json(createJourney(s, user(req), param(req, "sessionId"), req.body, config)),
+  );
+  app.post("/api/journey/:sessionId/turns", auth, (req, res) =>
+    res.status(201).json(startTurn(s, user(req), param(req, "sessionId"), req.body, true)),
+  );
+  app.post("/api/journey/:sessionId/recording-started", auth, (req, res) =>
+    res.json(recordJourneyStarted(s, user(req), param(req, "sessionId"))),
+  );
+  app.get("/api/operator/journey/metrics", auth, (req, res) =>
+    res.json(journeyMetrics(s, user(req))),
+  );
   app.get("/api/almanac", auth, (req, res) =>
     res.json(almanacView(s, user(req))),
   );

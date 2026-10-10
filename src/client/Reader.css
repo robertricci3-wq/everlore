@@ -1,0 +1,115 @@
+.reader-page .reader-heading {
+  margin-bottom: 28px;
+}
+.reader-page .art-page img,
+.reader-page .contact-grid img {
+  object-fit: contain;
+}
+.reader-page .art-page {
+  background: #f8f3e8;
+}
+.reader-page .reader-disclosure {
+  max-width: 780px;
+  margin: 22px auto 30px;
+  text-align: center;
+}
+.purchase-card {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  border-top: 1px solid #d7dccd;
+  padding: 28px 0;
+}
+.purchase-card h2 {
+  margin: 0 0 7px;
+  font-size: 25px;
+}
+.purchase-card p {
+  margin: 0;
+  line-height: 1.65;
+}
+.purchase-copy p,
+.purchase-price,
+.purchase-unavailable,
+.purchase-note {
+  color: #65705e;
+  font-size: 13px;
+}
+.purchase-note {
+  max-width: 620px;
+}
+.purchase-card .alert {
+  width: 100%;
+}
+.purchase-details,
+.reader-options {
+  width: 100%;
+}
+.purchase-details summary,
+.reader-options > summary,
+.order-status-details > summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 12px 0;
+  font-size: 14px;
+}
+.purchase-details p {
+  margin: 10px 0;
+}
+.print-preview {
+  display: block;
+  width: 100%;
+  max-width: 600px;
+  object-fit: contain;
+}
+.purchase-preview-navigation,
+.reader-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.reader-options {
+  border-top: 1px solid #d7dccd;
+}
+.reader-options > summary {
+  color: #53664b;
+}
+.reader-options-content {
+  padding: 0 0 25px;
+}
+.reader-options .reader-tools {
+  margin: 8px 0 20px;
+}
+.reader-options .source-details {
+  padding: 15px 0;
+  border-radius: 0;
+  background: transparent;
+}
+.reader-options .source-details summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.reader-archive {
+  max-width: 650px;
+  line-height: 1.7;
+}
+@media (max-width: 650px) {
+  .reader-page .reader-heading {
+    margin-bottom: 24px;
+  }
+  .reader-page .purchase-card {
+    padding: 24px 0;
+  }
+  .purchase-card > .button,
+  .reader-secondary-actions > .button {
+    width: 100%;
+    justify-content: center;
+  }
+  .reader-options .reader-tools {
+    display: block;
+  }
+  .reader-page .segmented button {
+    padding: 10px 8px;
+  }
+}

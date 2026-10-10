@@ -1,0 +1,50 @@
+.record-entry { display:grid; grid-template-columns:1.08fr 1fr; gap:60px; align-items:center; margin:0 0 64px; }
+.record-entry-copy { padding:12px 0; }
+.record-entry h2 { font-family:var(--serif); font-size:clamp(36px,4.6vw,64px); line-height:1.2; letter-spacing:-.045em; margin:22px 0; font-weight:400; }
+.record-entry h2 em { color:var(--green); }
+.record-entry-copy>p { font-size:18px; color:var(--muted); max-width:430px; line-height:1.7; }
+.record-entry-copy>p.small { font-size:14px; }
+.record-entry .record-primary { margin-top:14px; padding:20px 28px; font-size:18px; }
+.record-alternatives { display:flex; flex-wrap:wrap; gap:8px 22px; margin-top:14px; }
+.record-alternatives .text-button { min-height:44px; font-size:14px; }
+.record-art { margin:0; }
+.record-art img { width:100%; height:auto; display:block; border-radius:5px 16px 16px 5px; box-shadow:0 8px 0 #e6ddc9,0 28px 50px #3039291f; }
+.record-art figcaption { text-align:center; margin-top:22px; font-size:12px; color:var(--muted); }
+.record-idea { border-left:2px solid #a1a88c; padding:4px 0 4px 20px; margin:20px 0; }
+.record-idea p { font-family:var(--serif); font-size:20px; margin:0 0 8px; }
+.record-consent { margin-top:20px; max-width:480px; }
+.record-consent span { font-size:14px; }
+.memory-composer { max-width:800px; margin:auto; padding:28px 44px 80px; }
+.memory-composer>.eyebrow { display:block; margin-top:44px; }
+.memory-composer h1 { font-size:clamp(40px,5vw,64px); line-height:1.2; letter-spacing:-.035em; margin:22px 0; }
+.composer-invitation { color:var(--muted); font-size:21px; max-width:620px; margin-bottom:30px; }
+.memory-composer .voice-turn { padding:28px 0; border:0; }
+.memory-composer .button-row { align-items:center; gap:18px; }
+.memory-composer .memory-manual { margin-top:18px; }
+.composer-saved { padding:20px 0; display:flex; align-items:center; flex-wrap:wrap; gap:16px 24px; }
+.composer-saved>p { flex-basis:100%; display:flex; align-items:center; gap:10px; }
+.creation-reveal { padding:60px 0; }
+.creation-reveal>p { font-size:19px; color:var(--muted); }
+.creation-reveal>p.small { font-size:14px; margin-top:24px; }
+.memory-composer audio { width:100%; }
+.record-entry ~ .almanac-saved { border-top:1px solid var(--line); padding-top:24px; }
+@media(max-width:720px) {
+ .record-entry { grid-template-columns:1fr; gap:30px; margin-bottom:36px; }
+ .record-entry h2 { font-size:39px; }
+ .record-entry-copy { padding-top:0; }
+ .record-entry .record-primary { width:100%; justify-content:center; }
+ .record-art { max-width:440px; margin:auto; }
+ .memory-composer { padding:20px 24px 48px; }
+ .memory-composer>.eyebrow { margin-top:30px; }
+ .memory-composer h1 { font-size:42px; }
+ .memory-composer .button-row .button { flex:1; justify-content:center; }
+ .composer-invitation { font-size:19px; }
+}
+@media(prefers-reduced-motion:reduce) { .memory-composer, .record-entry { animation:none; transition:none; } }
+
+.family-heading { padding-bottom:18px; }
+.family-heading h1 { font-size:21px; margin:0; color:var(--muted); }
+
+.progress-art, .finished-reveal { margin:24px 0; max-width:500px; }
+.progress-art img, .finished-reveal img { display:block; width:100%; height:auto; border-radius:5px; }
+.progress-art figcaption, .finished-reveal figcaption { margin-top:12px; font-size:15px; color:var(--muted); }
