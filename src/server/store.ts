@@ -14,6 +14,7 @@ import {
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { migrateLab } from "./lab/schema.js";
+import { migrateAlmanac } from "./almanac/schema.js";
 
 export function hash(value: string | Uint8Array) {
   return createHash("sha256").update(value).digest("hex");
@@ -70,6 +71,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS studio_recoveries(id TEXT PRIMARY KEY,jobId TEXT NOT NULL REFERENCES studio_jobs(id) ON DELETE CASCADE,callId TEXT NOT NULL UNIQUE,stage TEXT NOT NULL,uncertain INTEGER NOT NULL,extraReserve INTEGER NOT NULL,createdAt TEXT NOT NULL);
     `);
     migrateLab(this.db);
+    migrateAlmanac(this.db);
   }
   one<T>(sql: string, ...params: SQLInputValue[]) {
     return this.db.prepare(sql).get(...params) as T | undefined;

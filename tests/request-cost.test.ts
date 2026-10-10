@@ -240,21 +240,27 @@ test("network uncertainty retains reserved bound without pretending usage or bil
   );
 });
 
-test("guarded audio uses single block and legacy provider remains compatible unless strict guard installed", async () => {
+test("guarded short audio answer uses one block and preserves request bound and receipt", async () => {
   let bound: RequestCostBound | undefined;
   const provider = new OpenAIProvider(pricedConfig, async (_url, init) => {
     assert(bound);
     assert(init?.body instanceof FormData);
     assert.equal(init.body.has("chunking_strategy"), false);
-    return new Response(JSON.stringify({ text: "Synthetic transcription." }));
+    return new Response(JSON.stringify({ text: "My dad." }), {
+      headers: { "x-request-id": "short-answer-fixture" },
+    });
   }).withRequestGuard((value) => {
     bound = value;
   });
   assert.equal(
     await provider.transcribe(Buffer.from("synthetic"), "audio/wav"),
-    "Synthetic transcription.",
+    "My dad.",
   );
   assert.equal(bound?.maxCostCents, 19);
+  const receipt = provider.takeReceipt()!;
+  assert.equal(receipt.requestId, "short-answer-fixture");
+  assert.deepEqual(receipt.requestCostBound, bound);
+  assert.equal(receipt.meteredCost, null);
   assert.doesNotThrow(() =>
     new OpenAIProvider(pricedConfig).validateRequestCosts(),
   );

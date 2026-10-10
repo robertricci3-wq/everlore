@@ -289,9 +289,9 @@ export function Capture({ user }: { user: SessionUser }) {
             onChange={(e) => setConsent(e.target.checked)}
           />
           <span>
-            I’m an adult and have permission to save this recording on this
-            computer. I’ll choose separately whether to send it to the AI story
-            studio.
+            I’m an adult and have permission to save this recording to my
+            private shelf. I’ll choose separately whether to send it to the AI
+            story studio.
           </span>
         </label>
       )}

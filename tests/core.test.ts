@@ -1,3 +1,4 @@
+import { configureAccess } from "../src/server/access.js";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -386,7 +387,15 @@ test("an expired final-attempt lease becomes actionable instead of staying compo
   const p = (await call(`/projects/${pid}`)).data;
   assert.equal(p.status, "needs_attention");
   assert.equal(p.jobs[0].status, "retryable_failure");
-  assert.match(p.jobs[0].error, /developer review/);
+  assert.match(p.jobs[0].error, /memory and completed work are saved/);
+  assert.match(p.jobs[0].error, /Everlore host/);
+  assert.match(
+    store.one<{ error: string }>(
+      "SELECT error FROM jobs WHERE projectId=?",
+      pid,
+    )!.error,
+    /developer review/,
+  );
   assert.equal((await call(`/projects/${pid}/retry`, {})).response.status, 409);
 });
 test("a name correction changes all dependent text and metadata, preserving source and artwork", async () => {
@@ -548,7 +557,7 @@ test("v2 approval, repair, evidence, archive and connection routes enforce shelf
   for (const path of ["engine/evidence", "archive"]) {
     assert.equal(
       (await call(`/projects/${pid}/${path}`, undefined, b)).response.status,
-      404,
+      path === "engine/evidence" ? 403 : 404,
     );
     assert.equal(
       (await call(`/projects/${pid}/${path}`, undefined, "")).response.status,
@@ -568,13 +577,20 @@ test("v2 approval, repair, evidence, archive and connection routes enforce shelf
     imageReserveUsd: 0.75,
     authorizeCosts: true,
   };
-  const response = await call("/studio-setup", settings, a);
+  const operator = store.one<{ id: string }>(
+    "SELECT id FROM users WHERE name='owner a'",
+  )!;
+  configureAccess(store, false, operator.id);
+  const response = await call("/operator/studio-setup", settings, a);
   assert.equal(response.response.status, 200);
   assert.doesNotMatch(JSON.stringify(response.data), /sk-test/);
   assert.equal(
     (await call("/studio-setup", undefined, b)).data.canManage,
     false,
   );
-  assert.equal((await call("/studio-setup", settings, b)).response.status, 409);
+  assert.equal(
+    (await call("/operator/studio-setup", settings, b)).response.status,
+    403,
+  );
   assert.equal(store.all("SELECT * FROM studio_calls").length, 0);
 });

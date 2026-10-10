@@ -12,12 +12,14 @@ export function StudioSetup({
   detailsRef,
   nextAction,
   additionalReserveUsd,
+  endpoint = "/studio-setup",
 }: {
   state: StudioSetupView;
   onConnected: (state: StudioSetupView) => void;
   detailsRef: RefObject<HTMLDetailsElement | null>;
   nextAction?: string;
   additionalReserveUsd?: number;
+  endpoint?: string;
 }) {
   const [key, setKey] = useState(""),
     [budget, setBudget] = useState(
@@ -66,7 +68,7 @@ export function StudioSetup({
     setBusy(true);
     setError("");
     try {
-      const updated = await api<StudioSetupView>("/studio-setup", input);
+      const updated = await api<StudioSetupView>(endpoint, input);
       setKey("");
       setSaved(true);
       onConnected(updated);
@@ -81,7 +83,7 @@ export function StudioSetup({
     setError("");
     setSaved(false);
     try {
-      const updated = await api<StudioSetupView>("/studio-setup/check", {});
+      const updated = await api<StudioSetupView>(`${endpoint}/check`, {});
       onConnected(updated);
       if (!updated.ready) setError(updated.message);
       else setSaved(true);
@@ -122,8 +124,8 @@ export function StudioSetup({
           never returned by the app or included in story backups.
         </li>
         <li>
-          Choose an allowance. Creating a story still requires your consent on
-          this page.
+          Manage the existing authorized allowance. Families separately consent
+          to sharing their memory when they create a story.
         </li>
       </ol>
       <p className="small muted">

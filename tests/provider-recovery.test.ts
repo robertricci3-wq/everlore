@@ -1,3 +1,4 @@
+import { configureAccess } from "../src/server/access.js";
 import { z } from "zod";
 import { ScenePlan } from "../src/shared/studio.js";
 import { canAssembleReviewCopy } from "../src/server/engine/editorial.js";
@@ -43,6 +44,7 @@ function setup() {
     "INSERT INTO users VALUES('owner','owner','unused','private',?)",
     now(),
   );
+  configureAccess(store, false, "owner");
   store.run(
     "INSERT INTO projects VALUES('memory','owner','Synthetic recovery','unavailable','awaiting_transcription',0,NULL,?,?)",
     now(),
@@ -154,7 +156,7 @@ test("connection verification rejects a bad key without replacing saved settings
           throw new Error("Must not contact provider for another owner");
         },
       ),
-      /Only the shelf/,
+      /Only the configured/,
     );
   } finally {
     t.close();

@@ -4,6 +4,7 @@ import { Book, Transcript } from "../shared/contracts.js";
 import { VisualWorld, ReferenceAsset } from "../shared/studio.js";
 import { Store, canonical, hash, id, now, type ProjectRow } from "./store.js";
 import { fontBytes } from "./layout.js";
+import { InterviewArchive, exportInterviewArchive, validateInterviewArchive, importInterviewArchive } from "./almanac/archive.js";
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const BookRow = z.object({
   revision: z.number().int().positive(),
@@ -58,6 +59,7 @@ const Bundle = z.object({
     })
     .nullable(),
   checksum: digest,
+  interview: InterviewArchive.optional(),
 });
 export function exportArchive(store: Store, project: ProjectRow) {
   const revisions = store
@@ -115,6 +117,7 @@ export function exportArchive(store: Store, project: ProjectRow) {
     editions,
     assets,
     family,
+    ...(exportInterviewArchive(store, project.id) ? { interview: exportInterviewArchive(store, project.id) } : {}),
   };
   const bundle = Bundle.parse({
     ...payload,
@@ -198,6 +201,10 @@ export function restoreArchive(store: Store, ownerId: string, bytes: Buffer) {
     requireAsset(r.hash, "art");
     if (!r.approved) throw new Error("Family references were not approved");
   });
+  if (bundle.interview) validateInterviewArchive(bundle.interview, (digest, bytes) => {
+    requireAsset(digest, "audio");
+    if (assets.get(digest)!.bytes.length !== bytes) throw new Error("Interview recording length mismatch");
+  });
   const projectId = id();
   store.transaction(() => {
     if (
@@ -223,6 +230,7 @@ export function restoreArchive(store: Store, ownerId: string, bytes: Buffer) {
     );
     for (const [, asset] of assets)
       store.putAsset(projectId, asset.bytes, asset.kind);
+    if (bundle.interview) importInterviewArchive(store, ownerId, projectId, bundle.interview);
     if (bundle.recording) {
       const r = bundle.recording;
       store.run(

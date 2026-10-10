@@ -1,3 +1,6 @@
+import { isRecoveryLocked } from "../recovery-lock.js";
+import { assertSupportedCostPlan } from "./request-cost.js";
+import { legacyImageRender } from "../../shared/imageRender.js";
 import {
   isHosted,
   operatorId,
@@ -90,7 +93,7 @@ export async function checkSavedStudioConnection(
   config: EngineConfig,
   request: typeof fetch = fetch,
 ) {
-  if (isHosted(store)) requireOperator(store, ownerId);
+  requireOperator(store, ownerId);
   if (!config.apiKey) throw new EngineError("Save an API key first.");
   try {
     await verifyKey(store, config, config.apiKey, request);
@@ -122,17 +125,14 @@ export function setupView(
   config: EngineConfig,
 ): StudioSetupView {
   applyConnectionCheck(store, config);
-  const settings = saved(store),
-    canManage = isHosted(store)
-      ? operatorId(store) === ownerId
-      : !settings || settings.ownerId === ownerId,
+  const canManage = operatorId(store) === ownerId,
     connection = availability(config),
     cycle = studioReservation(config),
     used = reservedBudget(store),
     access = generationAccess(store, ownerId, config),
     canStart =
       connection.ready && config.budgetCents >= used + cycle && access.canStart;
-  if (isHosted(store) && !canManage)
+  if (!canManage)
     return {
       ready: connection.ready,
       canStart,
@@ -144,9 +144,9 @@ export function setupView(
       imageReserveUsd: 0,
       cycleReserveUsd: 0,
       usedReserveUsd: 0,
-      message: connection.ready
-        ? access.message
-        : "Story creation is temporarily unavailable. Your saved memories are safe; please contact Everlore for help.",
+      message: canStart
+        ? "Your story studio is ready."
+        : "Story creation is not enabled right now. Your saved memories are safe; contact Everlore for help.",
     };
   return {
     ready: connection.ready,
@@ -186,12 +186,8 @@ function prepareStudioConnection(
   input: unknown,
   config: EngineConfig,
 ) {
-  if (isHosted(store)) requireOperator(store, ownerId);
+  requireOperator(store, ownerId);
   const previous = saved(store);
-  if (!isHosted(store) && previous && previous.ownerId !== ownerId)
-    throw new EngineError(
-      "Only the shelf that configured this connection can change it.",
-    );
   if (
     store.one(
       "SELECT id FROM studio_jobs WHERE status='running' OR status='queued'",
@@ -221,4 +217,47 @@ function prepareStudioConnection(
     textReserve: usdCents(body.textReserveUsd),
     imageReserve: usdCents(body.imageReserveUsd),
   });
+}
+
+/** Customer-safe readiness, including when the operator visits their own family shelf. */
+export function familySetupView(
+  store: Store,
+  ownerId: string,
+  config: EngineConfig,
+): StudioSetupView {
+  const view = setupView(store, ownerId, config);
+  let ready =
+    view.ready &&
+    process.env.DISABLE_WORKER !== "1" &&
+    !isRecoveryLocked(store);
+  if (ready && config.strictCostGuard) {
+    try {
+      assertSupportedCostPlan(
+        {
+          text: config.textModel,
+          image: config.imageModel,
+          audio: config.audioModel,
+        },
+        config.imageRender ?? legacyImageRender(config.imageModel),
+      );
+    } catch {
+      ready = false;
+    }
+  }
+  const canStart = ready && view.canStart;
+  return {
+    ready,
+    canStart,
+    canManage: false,
+    hasKey: false,
+    budgetUsd: 0,
+    audioReserveUsd: 0,
+    textReserveUsd: 0,
+    imageReserveUsd: 0,
+    cycleReserveUsd: 0,
+    usedReserveUsd: 0,
+    message: canStart
+      ? "Your story studio is ready."
+      : "Story creation is not enabled right now. Your saved memories are safe; contact Everlore for help.",
+  };
 }

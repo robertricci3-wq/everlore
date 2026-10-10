@@ -1,3 +1,4 @@
+import { configureAccess } from "../src/server/access.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,6 +14,7 @@ import {
 import { Book, Transcript } from "../src/shared/contracts.js";
 import {
   queueStudio,
+  familyVersions,
   runStudio,
   studioView,
   confirmStudioSource,
@@ -425,10 +427,11 @@ test("reservations cover bounded v2 requests and release unattempted work when a
     t.close();
   }
 });
-test("local connection requires explicit authorization, redacts its key, persists privately and is owner managed", () => {
+test("local connection requires explicit operator authorization, redacts its key and persists privately", () => {
   const t = setup(),
     config = engineConfig({});
   try {
+    configureAccess(t.store, false, "owner");
     const body = {
       apiKey: "sk-test-private-never-return",
       budgetUsd: 100,
@@ -844,5 +847,42 @@ test("drawing from existing allowance never exceeds the authorized total or disp
     );
   } finally {
     t.close();
+  }
+});
+
+// Suggest the last cast this family actually used, without rewriting any edition.
+test("saved animal families prefer recent use over recent creation and stay owner-scoped", () => {
+  const f = setup();
+  try {
+    for (const cast of ["familiar", "newer"])
+      f.store.run(
+        "INSERT INTO family_versions VALUES(?, 'owner', ?, '{}', '[]', ?)",
+        cast,
+        cast,
+        now(),
+      );
+    f.store.run(
+      "INSERT INTO users VALUES('other','other','unused','private',?)",
+      now(),
+    );
+    f.store.run(
+      "INSERT INTO family_versions VALUES('private','other','Private','{}','[]',?)",
+      now(),
+    );
+    assert.deepEqual(
+      familyVersions(f.store, "owner").map((c) => c.id),
+      ["newer", "familiar"],
+    );
+    f.store.run(
+      "INSERT INTO studio_jobs VALUES('used','memory',0,'generation','completed','done','{}',?,'{}',0,0,NULL,NULL,?)",
+      JSON.stringify({ familyVersionId: "familiar" }),
+      now(),
+    );
+    assert.deepEqual(
+      familyVersions(f.store, "owner").map((c) => c.id),
+      ["familiar", "newer"],
+    );
+  } finally {
+    f.close();
   }
 });

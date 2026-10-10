@@ -316,7 +316,9 @@ export class OpenAIProvider implements Provider {
     const result = await this.post("audio/transcriptions", form, () =>
       audioRequestCost(this.config.audioModel, bytes.length),
     );
-    return z.string().trim().min(10).max(50000).parse(result.text);
+    // A short clarification ("My dad.") is a valid interview answer.
+    // Narrative sufficiency belongs to the story workflow, not transcription.
+    return z.string().trim().min(1).max(50000).parse(result.text);
   }
   async structured<T>(
     name: string,

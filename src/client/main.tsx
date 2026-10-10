@@ -26,14 +26,16 @@ import "@fontsource/dm-sans/600.css";
 import "@fontsource/literata/400.css";
 import "@fontsource/literata/400-italic.css";
 import "./styles.css";
+import "./Almanac.css";
+import { Almanac } from "./Almanac.js";
+import { MemoryInvitationPage, MemoryInterview } from "./MemoryInterview.js";
+import { OperatorCosts } from "./OperatorCosts.js";
 import { api, deleteDraft, go, type SessionUser } from "./api.js";
-import { artDataUrl } from "../shared/art.js";
 import { sampleSource } from "../shared/fixture.js";
-import type { ProjectSummary, ProjectView } from "../shared/contracts.js";
+import type { ProjectView } from "../shared/contracts.js";
 import { Capture } from "./Capture.js";
 import { Reader } from "./Reader.js";
-import { ArchiveRestore } from "./ArchiveRestore.js";
-import { StoryStudio, StudioStatus } from "./StoryStudio.js";
+import { StoryStudio, StudioStatus, OperatorStudioSetup } from "./StoryStudio.js";
 
 function App() {
   const [path, setPath] = useState(location.hash.slice(1) || "/"),
@@ -64,7 +66,7 @@ function App() {
     go("/example");
   }
   function tell() {
-    go(user?.kind === "private" ? "/capture" : "/join");
+    go(user?.kind === "private" ? "/shelf" : "/join");
   }
   async function logout() {
     setError("");
@@ -101,7 +103,7 @@ function App() {
         </a>
         <nav aria-label="Main navigation">
           <a href="#/shelf" className={path === "/shelf" ? "active" : ""}>
-            Your bookshelf
+            Your almanac
           </a>
           {user?.labOwner && (
             <a className="nav-link" href="#/lab">
@@ -151,7 +153,7 @@ function App() {
             login={path === "/login"}
             onDone={async () => {
               await session();
-              go(path === "/login" ? "/shelf" : "/capture");
+              go("/shelf");
             }}
           />
         ) : path === "/capture" ? (
@@ -167,12 +169,22 @@ function App() {
           )
         ) : path === "/lab" ? (
           <CreativeLab />
-        ) : path === "/shelf" ? (
-          <Shelf user={user} tell={tell} explore={explore} />
+        ) : ["/shelf", "/reading"].includes(path) ? (
+          user?.kind === "private" ? <Almanac key={path} reading={path === "/reading"} /> : <Account login onDone={session} />
+        ) : path.startsWith("/name-page/") ? (
+          user?.kind === "private" ? <MemoryInvitationPage key={path} pageId={path.split("/")[2]} titleOnly /> : <Account login onDone={session} />
+        ) : path.startsWith("/memory/") ? (
+          user?.kind === "private" ? <MemoryInvitationPage key={path} pageId={path.split("/")[2]} /> : <Account login onDone={session} />
+        ) : path.startsWith("/interview/") ? (
+          user?.kind === "private" ? <MemoryInterview key={path} sessionId={path.split("/")[2]} user={user} /> : <Account login onDone={session} />
         ) : path === "/orders" ? (
           <OrderHistory />
         ) : path === "/operator/orders" ? (
           <CommerceOperations />
+        ) : path === "/operator/costs" ? (
+          <OperatorCosts />
+        ) : path === "/operator/studio" ? (
+          <OperatorStudioSetup />
         ) : path === "/operator/access" ? (
           <OperatorAccess />
         ) : path.startsWith("/order/") ? (
@@ -460,112 +472,6 @@ function Account({
         {login ? "New here? Create a shelf" : "Already have a shelf? Sign in"}
       </button>
     </main>
-  );
-}
-function Shelf({
-  user,
-  tell,
-  explore,
-}: {
-  user: SessionUser | null;
-  tell: () => void;
-  explore: () => void;
-}) {
-  const [projects, setProjects] = useState<ProjectSummary[]>([]),
-    [error, setError] = useState("");
-  useEffect(() => {
-    if (user)
-      void api<ProjectSummary[]>("/projects")
-        .then(setProjects)
-        .catch((cause) => setError(cause.message));
-  }, [user]);
-  return (
-    <main className="shelf-page enter">
-      <div className="shelf-heading">
-        <div>
-          <div className="eyebrow">THE THINGS WORTH KEEPING</div>
-          <h1>Your bookshelf.</h1>
-          <p>A little collection of the moments that matter.</p>
-        </div>
-        <button className="button" onClick={tell}>
-          <Mic size={20} /> Tell a story
-        </button>
-      </div>
-      {error && (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      )}
-      {user?.kind === "private" && <ArchiveRestore />}
-      {projects.length ? (
-        <div className="shelf-grid">
-          {projects.map((project) => (
-            <button
-              className="shelf-card"
-              key={project.id}
-              onClick={() => go(`/story/${project.id}`)}
-            >
-              {project.mode === "synthetic_fixture" ? (
-                <img src={artDataUrl(11)} alt="Blue coat sample book" />
-              ) : (
-                <div className="audio-cover">
-                  <Mic size={58} strokeWidth={1} />
-                  <span>
-                    A memory
-                    <br />
-                    in your words
-                  </span>
-                </div>
-              )}
-              <div>
-                <span className="eyebrow">
-                  {project.mode === "synthetic_fixture"
-                    ? "SYNTHETIC EXAMPLE"
-                    : "PRIVATE RECORDING"}
-                </span>
-                <h2>{project.title}</h2>
-                <p>{statusLabel(project.status)}</p>
-                <span className="shelf-open">
-                  Open story <ArrowRight size={17} />
-                </span>
-              </div>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="empty-shelf">
-          <BookOpen size={45} strokeWidth={1} />
-          <h2>Every shelf starts with one story.</h2>
-          <p>
-            {user
-              ? "Tell a memory, or explore the illustrations to see what a story can become."
-              : "Sign in to open your stories, or explore the illustrations."}
-          </p>
-          <button className="button secondary" onClick={explore}>
-            Explore the illustrations
-            <ArrowRight size={18} />
-          </button>
-        </div>
-      )}
-    </main>
-  );
-}
-function statusLabel(status: string) {
-  return (
-    (
-      {
-        draft: "Ready for a recording",
-        needs_confirmation: "Ready to confirm",
-        composing: "Making the example",
-        ready_for_review: "Ready to read",
-        edition_saved: "Edition saved",
-        awaiting_transcription: "Recording saved · ready for the story studio",
-        awaiting_editorial: "Words confirmed · ready for the story studio",
-        needs_attention: "Needs attention",
-        creating_legacy: "Creating your legacy story",
-        legacy_review: "Your story studio needs a look",
-      } as Record<string, string>
-    )[status] ?? status
   );
 }
 function Project({ projectId }: { projectId: string }) {

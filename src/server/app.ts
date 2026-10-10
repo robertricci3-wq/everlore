@@ -1,4 +1,9 @@
 import { isRecoveryLocked } from "./recovery-lock.js";
+import { installAlmanacRoutes } from "./almanac/routes.js";
+import { interviewRecovery } from "./almanac/transcription.js";
+import { installOperatorCostRoutes } from "./costs/routes.js";
+import { assertSupportedCostPlan } from "./engine/request-cost.js";
+import { legacyImageRender } from "../shared/imageRender.js";
 import {
   installCommercePublic,
   installCommerceRoutes,
@@ -68,10 +73,11 @@ import {
 
 import {
   setupView,
+  familySetupView,
   saveVerifiedStudioConnection,
   checkSavedStudioConnection,
 } from "./engine/setup.js";
-import { resumeStudio } from "./engine/recovery.js";
+import { resumeStudio, studioRecovery } from "./engine/recovery.js";
 
 class HttpError extends Error {
   constructor(
@@ -207,6 +213,8 @@ export function createApp(
         409,
         "Lab artifacts are frozen experiment evidence. Create a new experiment to change them.",
       );
+    if (req.method !== "GET" && store.one("SELECT id FROM almanac_sessions WHERE projectId=?", p.id))
+      throw new HttpError(409, "Open this memory in your almanac to add to it or make its story.");
     return p;
   };
   const currentBook = (p: ProjectRow) =>
@@ -268,7 +276,14 @@ export function createApp(
         : 0,
     }),
   );
-  app.get("/api/engine", (_req, res) => res.json(availability(config)));
+  app.get("/api/engine", (_req, res) => {
+    let ready = availability(config).ready && process.env.DISABLE_WORKER !== "1" && !isRecoveryLocked(store);
+    if (ready && config.strictCostGuard) {
+      try { assertSupportedCostPlan({ text: config.textModel, image: config.imageModel, audio: config.audioModel }, config.imageRender ?? legacyImageRender(config.imageModel)); }
+      catch { ready = false; }
+    }
+    res.json({ ready, message: ready ? "Ready when you are. Everlore takes care of making your book." : "You can save a memory now. Story creation is not available yet; your recording will be kept safely." });
+  });
   app.get("/api/session", (req, res) => {
     const user = findUser(req);
     res.json({
@@ -378,6 +393,8 @@ export function createApp(
     res.status(201).json({ id: projectId });
   });
   installLabRoutes(app, store, config, auth, owner);
+  installAlmanacRoutes(app, store, { auth, owner, config });
+  installOperatorCostRoutes(app, store, operatorGuard);
   installCommerceRoutes(app, store, auth, owner);
   installCommerceOperatorRoutes(app, store, operatorGuard);
   app.get("/api/operator/access", operatorGuard, (_req, res) =>
@@ -434,6 +451,16 @@ export function createApp(
   app.get("/api/projects/:id", auth, (req, res) => {
     const p = project(req);
     const book = p.revision ? currentBook(p) : null;
+    const isOperator = operatorId(store) === owner(req).id;
+    const engine = studioView(store, p.id) ?? engineView(store, p.id);
+    const familyFailure = "Your memory and completed work are saved. Please ask your Everlore host to help continue this story. You do not need to change any settings.";
+    const visibleEngine = engine && !isOperator
+      ? { ...engine, error: engine.error ? familyFailure : null, ...("recovery" in engine ? { recovery: null } : {}) }
+      : engine;
+    const jobs = store.all<{ id: string; status: string; stage: string; error: string | null; attempt: number }>(
+      "SELECT id,status,stage,error,attempt FROM jobs WHERE projectId=? ORDER BY rowid DESC",
+      p.id,
+    );
     res.json({
       id: p.id,
       title: p.title,
@@ -442,17 +469,14 @@ export function createApp(
       revision: p.revision,
       createdAt: p.createdAt,
       book,
-      engine: studioView(store, p.id) ?? engineView(store, p.id),
+      engine: visibleEngine,
       transcript: p.transcript ? JSON.parse(p.transcript) : null,
       recording:
         store.one(
           "SELECT id,mime,bytes,assetHash AS sha256,captureMode,createdAt FROM recordings WHERE projectId=?",
           p.id,
         ) ?? null,
-      jobs: store.all(
-        "SELECT id,status,stage,error,attempt FROM jobs WHERE projectId=? ORDER BY rowid DESC",
-        p.id,
-      ),
+      jobs: isOperator ? jobs : jobs.map(job => ({ ...job, error: job.error ? familyFailure : null })),
       editions: store.all(
         "SELECT id,revision,contentHash,pdfHash,createdAt FROM editions WHERE projectId=? ORDER BY revision DESC",
         p.id,
@@ -739,7 +763,7 @@ export function createApp(
     },
   );
   app.get("/api/studio-setup", auth, (req, res) =>
-    res.json(setupView(store, owner(req).id, config)),
+    res.json(familySetupView(store, owner(req).id, config)),
   );
   app.post("/api/studio-setup", auth, async (req, res) => {
     if (owner(req).kind !== "private")
@@ -768,6 +792,7 @@ export function createApp(
   });
   app.post("/api/projects/:id/engine/resume", auth, async (req, res) => {
     const p = project(req);
+    requireOperator(store, owner(req).id);
     if (owner(req).kind !== "private")
       throw new HttpError(403, "Open your private shelf first.");
     if (!hostingOrigin || operatorId(store) === owner(req).id)
@@ -777,6 +802,29 @@ export function createApp(
         config,
         connectionRequest,
       );
+    res.json(resumeStudio(store, p, req.body, config));
+  });
+  app.get("/api/operator/studio-setup", operatorGuard, (req, res) => res.json(setupView(store, owner(req).id, config)));
+  app.post("/api/operator/studio-setup", operatorGuard, async (req, res) => {
+    res.json(await saveVerifiedStudioConnection(store, owner(req).id, req.body, config, connectionRequest));
+  });
+  app.post("/api/operator/studio-setup/check", operatorGuard, async (req, res) => {
+    res.json(await checkSavedStudioConnection(store, owner(req).id, config, connectionRequest));
+  });
+  app.get("/api/operator/projects/:id/recovery", operatorGuard, (req, res) => {
+    const p = requireValue(store.one<ProjectRow>("SELECT * FROM projects WHERE id=?", String(req.params.id)));
+    const job = latestStudio(store, p.id);
+    if (job?.kind === "interview_transcription") {
+      const source = requireValue(store.one<{sessionId:string;turnId:string}>("SELECT sessionId,turnId FROM almanac_transcriptions WHERE jobId=?", job.id), "This interview recovery record is unavailable.");
+      return res.json({ kind: "interview", interview: interviewRecovery(store, owner(req).id, source.sessionId, source.turnId) });
+    }
+    res.json({ kind: "story", jobId: job?.id ?? null, recovery: job ? studioRecovery(store, job.id) : null, error: job?.error ?? null });
+  });
+  app.post("/api/operator/projects/:id/resume", operatorGuard, async (req, res) => {
+    const p = requireValue(store.one<ProjectRow>("SELECT * FROM projects WHERE id=?", String(req.params.id)));
+    if (store.one("SELECT jobId FROM almanac_transcriptions t JOIN studio_jobs j ON j.id=t.jobId WHERE j.projectId=?", p.id))
+      throw new HttpError(409, "Use this interview’s dedicated recovery controls. An uncertain transcription cannot be retried through story recovery.");
+    await checkSavedStudioConnection(store, owner(req).id, config, connectionRequest);
     res.json(resumeStudio(store, p, req.body, config));
   });
   app.get("/api/families", auth, (req, res) =>
@@ -796,8 +844,8 @@ export function createApp(
   app.post("/api/projects/:id/engine/repair", auth, (req, res) =>
     res.json({ id: queueRepair(store, project(req), req.body, config) }),
   );
-  app.get("/api/projects/:id/engine/evidence", auth, (req, res) => {
-    const p = project(req);
+  app.get("/api/projects/:id/engine/evidence", operatorGuard, (req, res) => {
+    const p = requireValue(store.one<ProjectRow>("SELECT * FROM projects WHERE id=?", String(req.params.id)));
     const jobs = store.all<{
       id: string;
       status: string;

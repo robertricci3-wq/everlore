@@ -1,3 +1,4 @@
+import { configureAccess } from "../src/server/access.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -63,6 +64,11 @@ test("saving a smaller allowance keeps the key but blocks new books until suffic
     store = new Store(dir),
     config = engineConfig({});
   try {
+    store.run(
+      "INSERT INTO users VALUES('owner','owner','unused','private',?)",
+      new Date().toISOString(),
+    );
+    configureAccess(store, false, "owner");
     const saved = saveStudioConnection(
       store,
       "owner",
@@ -79,7 +85,7 @@ test("saving a smaller allowance keeps the key but blocks new books until suffic
     assert.equal(saved.audioReserveUsd, 3);
     assert.throws(
       () => saveStudioConnection(store, "other", input, config),
-      /Only the shelf/,
+      /Only the configured/,
     );
     assert.throws(
       () =>

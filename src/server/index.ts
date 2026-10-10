@@ -18,6 +18,7 @@ import {
 import { runEngine } from "./engine/pipeline.js";
 import { runStudio } from "./engine/studio.js";
 import { loadStudioConnection } from "./engine/setup.js";
+import { runInterviewTranscription } from "./almanac/transcription.js";
 
 const config = z
   .object({
@@ -47,7 +48,7 @@ if (process.env.NODE_ENV === "production") {
 const workers = startWorkerLanes([
   { name: "creative", run: async () => {
     loadStudioConnection(store, studioConfig);
-    if (!(await runOneJob(store)) && !(await runEngine(store, provider, studioConfig)))
+    if (!(await runOneJob(store)) && !(await runEngine(store, provider, studioConfig)) && !(await runInterviewTranscription(store, provider, studioConfig)))
       await runStudio(store, provider, studioConfig);
   } },
   { name: "fulfillment", run: () => fulfillOne(store, commerceConfig(store.dir)) },

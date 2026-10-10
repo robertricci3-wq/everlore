@@ -4,6 +4,7 @@ import { engineConfig, OpenAIProvider } from "./engine/provider.js";
 import { runEngine } from "./engine/pipeline.js";
 import { runStudio } from "./engine/studio.js";
 import { loadStudioConnection } from "./engine/setup.js";
+import { runInterviewTranscription } from "./almanac/transcription.js";
 import { startWorkerLanes } from "./worker-lanes.js";
 import { isRecoveryLocked } from "./recovery-lock.js";
 import { fulfillOne, pollShippingOne } from "./commerce/service.js";
@@ -17,7 +18,7 @@ recoverInterruptedCommerce(store);
 const workers = startWorkerLanes([
   { name: "creative", run: async () => {
     loadStudioConnection(store, config);
-    if (!(await runOneJob(store)) && !(await runEngine(store, provider, config)))
+    if (!(await runOneJob(store)) && !(await runEngine(store, provider, config)) && !(await runInterviewTranscription(store, provider, config)))
       await runStudio(store, provider, config);
   } },
   { name: "fulfillment", run: () => fulfillOne(store, commerceConfig(store.dir)) },

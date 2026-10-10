@@ -1,22 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Sparkles } from "lucide-react";
 import type { ProjectView } from "../shared/contracts.js";
-import type { EngineAvailability } from "../shared/engine.js";
+
 import type { StudioSetupView } from "../shared/studioSetup.js";
 import { api } from "./api.js";
 import { StudioSetup } from "./StudioSetup.js";
 import { StudioReviews } from "./StudioReviews.js";
 
 export function StudioStatus() {
-  const [status, setStatus] = useState<EngineAvailability>();
+  const [status, setStatus] = useState<{ ready: boolean }>();
   useEffect(() => {
-    void api<EngineAvailability>("/engine")
+    void api<{ ready: boolean }>("/engine")
       .then(setStatus)
       .catch(() => undefined);
   }, []);
   return (
     <p className="small muted">
-      {status?.message ?? "Checking the story studio connection…"}
+      {status
+        ? status.ready
+          ? "Your story studio is ready."
+          : "Story creation is not enabled right now. Your saved memories are safe."
+        : "Checking story availability…"}
     </p>
   );
 }
@@ -66,10 +70,8 @@ export function StoryStudio({
     [wish, setWish] = useState(""),
     [source, setSource] = useState<string | null>(null),
     [busy, setBusy] = useState(false),
-    [retryConsent, setRetryConsent] = useState(false),
     [error, setError] = useState("");
   const run = project.engine;
-  const setupRef = useRef<HTMLDetailsElement>(null);
   const consentRef = useRef<HTMLInputElement>(null);
   async function loadConnection() {
     try {
@@ -83,7 +85,10 @@ export function StoryStudio({
   }
   useEffect(() => {
     void api<{ id: string; name: string }[]>("/families")
-      .then(setFamilies)
+      .then((saved) => {
+        setFamilies(saved);
+        setFamilyId(saved[0]?.id ?? "");
+      })
       .catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -95,8 +100,10 @@ export function StoryStudio({
     try {
       await api(`/projects/${project.id}/engine${path}`, data);
       await refresh();
-    } catch (cause) {
-      setError((cause as Error).message);
+    } catch {
+      setError(
+        "This step could not finish yet. Your memory and completed work are saved. Please try again later or contact Everlore.",
+      );
       if (path === "/resume")
         void api<StudioSetupView>("/studio-setup")
           .then(setConnection)
@@ -135,7 +142,7 @@ export function StoryStudio({
           </label>
           {!!families.length && (
             <label>
-              Your family in this book
+              Use these characters
               <select
                 value={familyId}
                 onChange={(e) => setFamilyId(e.target.value)}
@@ -149,24 +156,24 @@ export function StoryStudio({
               </select>
             </label>
           )}
+          {!!families.length && (
+            <p className="small muted">
+              Your most recently saved family is selected. This choice is for
+              this new book; earlier books stay as they are.
+            </p>
+          )}
           <p className="studio-note">
             Inspired by your life. Free to be magical. The story can add
             imagined scenes, dialogue and adventures; your original voice stays
             preserved.
           </p>
           <p className="notice">
-            {connection?.message ?? "Checking the studio connection…"}
+            {connection
+              ? connection.canStart
+                ? "Your story studio is ready."
+                : "Story creation is not enabled right now. Your memory is saved; contact Everlore for help."
+              : "Checking story availability…"}
           </p>
-          {connection && (
-            <StudioSetup
-              state={connection}
-              detailsRef={setupRef}
-              onConnected={(updated) => {
-                setConnection(updated);
-                setError("");
-              }}
-            />
-          )}
           {connection?.canStart && (
             <label className="consent">
               <input
@@ -198,17 +205,8 @@ export function StoryStudio({
             onClick={() => {
               if (!connection?.canStart) {
                 setError(
-                  connection?.message ??
-                    "Check the studio connection before starting your story.",
+                  "Story creation is not enabled right now. Your memory is saved; contact Everlore for help.",
                 );
-                if (setupRef.current) {
-                  setupRef.current.open = true;
-                  setupRef.current.querySelector("summary")?.focus();
-                  setupRef.current.scrollIntoView({
-                    block: "start",
-                    behavior: "smooth",
-                  });
-                }
                 return;
               }
               if (!consent) {
@@ -230,10 +228,10 @@ export function StoryStudio({
           </button>
           <p className="small muted">
             {!connection?.canStart
-              ? "First save your private connection and an allowance that covers one book."
+              ? "Your memory is saved while story creation is unavailable."
               : !consent
                 ? "One last step: check the recording-sharing box above."
-                : "Ready when you are. Creating the book uses your saved allowance."}
+                : "Ready when you are. We will take care of creating your book."}
           </p>
           <p className="small muted">
             The studio develops, checks and refines your story and illustrations
@@ -247,13 +245,7 @@ export function StoryStudio({
       {run && ["queued", "running"].includes(run.status) && (
         <div aria-live="polite">
           <h2>{stageName(run.stage)}</h2>
-          {connection?.ready ? (
-            <p className="loading">Making room for wonder…</p>
-          ) : (
-            <p className="notice">
-              {connection?.message ?? "Checking the studio connection…"}
-            </p>
-          )}
+          <p className="loading">Making room for wonder…</p>
           <p>
             Each completed step is saved. You can leave this page and come back.
           </p>
@@ -345,98 +337,16 @@ export function StoryStudio({
       )}
       {run && ["needs_attention", "needs_editor"].includes(run.status) && (
         <>
-          <h2>
-            {"kind" in run && run.recovery
-              ? "Your story is safely paused."
-              : "A little more care is needed."}
-          </h2>
+          <h2>Your story is safely paused.</h2>
           <p role="status">
-            {"kind" in run && run.recovery ? run.recovery.message : run.error}
+            The studio needs attention before it can continue. Everlore can help
+            recover this story from its saved progress.
           </p>
           <p>Your original memory and completed work are saved.</p>
           {"kind" in run && run.recovery && (
-            <>
-              <p className="small muted">
-                Saved stage: {stageName(run.recovery.stage)}
-              </p>
-              {connection?.message !== run.recovery.message && (
-                <p className="notice">
-                  {connection?.message ?? "Checking your connection…"}
-                </p>
-              )}
-              {connection && (
-                <StudioSetup
-                  state={connection}
-                  detailsRef={setupRef}
-                  additionalReserveUsd={
-                    run.recovery.resumeReserveUsd ??
-                    run.recovery.extraReserveUsd
-                  }
-                  nextAction="Connection checked and saved. Resume your saved story below."
-                  onConnected={(updated) => {
-                    setConnection(updated);
-                    setError("");
-                  }}
-                />
-              )}
-              {run.recovery.uncertain && (
-                <label className="consent">
-                  <input
-                    type="checkbox"
-                    checked={retryConsent}
-                    onChange={(event) => setRetryConsent(event.target.checked)}
-                  />
-                  <span>
-                    I understand the earlier attempt may have been charged.
-                    Retry this unfinished step using up to $
-                    {run.recovery.extraReserveUsd.toFixed(2)} more of my saved
-                    allowance. Keep completed steps.
-                  </span>
-                </label>
-              )}
-              <button
-                className="button full"
-                disabled={busy}
-                onClick={() => {
-                  if (!connection?.ready) {
-                    setError(
-                      connection?.message ??
-                        "Check your connection before resuming.",
-                    );
-                    if (setupRef.current) {
-                      setupRef.current.open = true;
-                      setupRef.current.querySelector("summary")?.focus();
-                    }
-                    return;
-                  }
-                  if (run.recovery!.uncertain && !retryConsent) {
-                    setError(
-                      "Check the possible-charge acknowledgment above before retrying this older attempt.",
-                    );
-                    return;
-                  }
-                  const acknowledgePossibleCharge = retryConsent;
-                  setRetryConsent(false);
-                  void act("/resume", {
-                    jobId: run.id,
-                    callId: run.recovery!.callId,
-                    acknowledgePossibleCharge,
-                  });
-                }}
-              >
-                {busy ? "Resuming your saved story…" : "Resume saved story"}
-              </button>
-              <p className="small muted">
-                Completed stages will be reused. This resumes the existing book
-                and reserves only its remaining work again.
-              </p>
-              {run.recovery.requestId && (
-                <details className="source-details">
-                  <summary>Technical details for this attempt</summary>
-                  <p>Provider request: {run.recovery.requestId}</p>
-                </details>
-              )}
-            </>
+            <p className="small muted">
+              Saved stage: {stageName(run.recovery.stage)}
+            </p>
           )}
         </>
       )}
@@ -444,6 +354,52 @@ export function StoryStudio({
         <p className="alert" role="alert">
           {error}
         </p>
+      )}
+    </section>
+  );
+}
+
+/** Render only on the authenticated operator route. The API independently enforces ownership. */
+export function OperatorStudioSetup() {
+  const [state, setState] = useState<StudioSetupView>();
+  const [error, setError] = useState("");
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    void api<StudioSetupView>("/operator/studio-setup")
+      .then(setState)
+      .catch((cause) => setError((cause as Error).message));
+  }, []);
+  return (
+    <section className="narrow project-state">
+      <span className="eyebrow">EVERLORE OPERATOR</span>
+      <h1>Story service</h1>
+      <p>
+        Manage the service connection and existing generation allowance here.
+        Families only choose their memory and consent to story creation.
+      </p>
+      <p>
+        <a href="#/operator/costs">
+          View book costs and saved recovery checkpoints
+        </a>
+      </p>
+      {error && (
+        <p role="alert" className="alert">
+          {error}
+        </p>
+      )}
+      {state ? (
+        <>
+          <p className="notice">{state.message}</p>
+          <StudioSetup
+            state={state}
+            detailsRef={detailsRef}
+            onConnected={setState}
+            endpoint="/operator/studio-setup"
+            nextAction="Service settings saved. Families can create stories when their invitation and the service are ready."
+          />
+        </>
+      ) : (
+        !error && <p>Loading service settings…</p>
       )}
     </section>
   );

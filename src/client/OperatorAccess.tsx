@@ -16,6 +16,6 @@ export function OperatorAccess() {
     {error&&<p role="alert">{error}</p>}{data&&<><p>Available generation allowance: ${(data.availableCents/100).toFixed(2)}. This is an internal estimate, not a provider balance.</p><label>Family or invitation name<input value={label} maxLength={100} onChange={e=>setLabel(e.target.value)}/></label><button className="button" disabled={busy||!label.trim()||data.availableCents<data.cycleReserveCents} onClick={()=>void issue()}>{busy?"Saving…":"Create invitation"}</button>
       {link&&<section className="story-studio"><p>Save this private invitation link now. It is shown only once and can be used once.</p><label>Invitation link<input readOnly value={link} onFocus={e=>e.target.select()}/></label></section>}
       {data.invitations.map(i=><section className="story-studio" key={i.id}><h2>{i.label}</h2><p>{i.revokedAt?"Revoked":i.redeemedBy?"Accepted":i.expiresAt<Date.now()?"Expired":"Ready to share"} · expires {new Date(i.expiresAt).toLocaleDateString()}</p>{!i.redeemedBy&&!i.revokedAt&&i.expiresAt>Date.now()&&<button className="button secondary" disabled={busy} onClick={()=>void revoke(i.id)}>Revoke invitation</button>}</section>)}
-      <p><a href="#/operator/orders">Manage orders and support</a></p></>}
+      <p><a href="#/operator/costs">Book costs and recovery</a> · <a href="#/operator/studio">AI connection and service settings</a> · <a href="#/operator/orders">Manage orders and support</a></p></>}
   </main>;
 }

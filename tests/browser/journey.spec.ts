@@ -37,6 +37,11 @@ async function account(page: Page) {
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Create your private shelf" }).click();
   await expect(
+    page.getByRole("heading", { name: "Your family, in stories." }),
+  ).toBeVisible();
+  // Legacy capture remains covered explicitly; new families land in the almanac.
+  await page.goto("/#/capture");
+  await expect(
     page.getByRole("heading", { name: "Take your time. We’re listening." }),
   ).toBeVisible();
 }

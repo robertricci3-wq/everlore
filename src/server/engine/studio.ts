@@ -159,7 +159,9 @@ export function latestStudio(store: Store, projectId: string) {
 }
 export function familyVersions(store: Store, ownerId: string) {
   return store.all<{ id: string; name: string; createdAt: string }>(
-    "SELECT id,name,createdAt FROM family_versions WHERE ownerId=? ORDER BY rowid DESC",
+    `SELECT f.id,f.name,f.createdAt FROM family_versions f WHERE f.ownerId=?
+     ORDER BY (SELECT MAX(j.rowid) FROM studio_jobs j JOIN projects p ON p.id=j.projectId
+       WHERE p.ownerId=f.ownerId AND json_extract(j.state,'$.familyVersionId')=f.id) DESC, f.rowid DESC`,
     ownerId,
   );
 }
@@ -275,8 +277,9 @@ export function queueStudio(
       "SELECT mime FROM recordings WHERE projectId=?",
       project.id,
     );
-    if (!recording) throw new EngineError("Save a recording first.");
-    if (recording.mime === "audio/ogg" && !project.transcript)
+    if (!recording && !project.transcript)
+      throw new EngineError("Save a recording or a memory first.");
+    if (recording?.mime === "audio/ogg" && !project.transcript)
       throw new EngineError(
         "Add a manual transcript for this OGG recording first.",
       );
@@ -792,7 +795,7 @@ export async function runStudio(
   const token = id(),
     job = store.transaction(() => {
       const row = store.one<StudioJob>(
-        `SELECT * FROM studio_jobs WHERE (status='queued' OR (status='running' AND leaseUntil<?)) AND ${options.jobId ? "id=?" : "NOT EXISTS(SELECT 1 FROM lab_runs WHERE lab_runs.jobId=studio_jobs.id)"} ORDER BY rowid LIMIT 1`,
+        `SELECT * FROM studio_jobs WHERE kind!='interview_transcription' AND (status='queued' OR (status='running' AND leaseUntil<?)) AND ${options.jobId ? "id=?" : "NOT EXISTS(SELECT 1 FROM lab_runs WHERE lab_runs.jobId=studio_jobs.id)"} ORDER BY rowid LIMIT 1`,
         Date.now(),
         ...(options.jobId ? [options.jobId] : []),
       );
