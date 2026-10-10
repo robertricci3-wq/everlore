@@ -35,7 +35,11 @@ import { sampleSource } from "../shared/fixture.js";
 import type { ProjectView } from "../shared/contracts.js";
 import { Capture } from "./Capture.js";
 import { Reader } from "./Reader.js";
-import { StoryStudio, StudioStatus, OperatorStudioSetup } from "./StoryStudio.js";
+import {
+  StoryStudio,
+  StudioStatus,
+  OperatorStudioSetup,
+} from "./StoryStudio.js";
 
 function App() {
   const [path, setPath] = useState(location.hash.slice(1) || "/"),
@@ -95,43 +99,44 @@ function App() {
         AI only when you choose.
       </div>
       <header className="site-header">
-        <a className="wordmark" href="#/" aria-label="Everlore home">
+        <a
+          className="wordmark"
+          href={user?.kind === "private" ? "#/shelf" : "#/"}
+          aria-label="Everlore home"
+        >
           <Sprout strokeWidth={1.3} size={31} />
           <span>
             everlore<span className="wordmark-dot">.</span>
           </span>
         </a>
-        <nav aria-label="Main navigation">
+        <nav aria-label="Main navigation" className="family-navigation">
           <a href="#/shelf" className={path === "/shelf" ? "active" : ""}>
-            Your almanac
+            Your stories
           </a>
-          {user?.labOwner && (
-            <a className="nav-link" href="#/lab">
-              Creative Lab
-            </a>
-          )}
-          {user?.kind === "private" && (
-            <a className="nav-link" href="#/orders">
-              Your orders
-            </a>
-          )}
-          {user?.operator && (
-            <a className="nav-link" href="#/operator/access">
-              Manage pilot
-            </a>
-          )}
           {user?.kind === "private" ? (
-            <button className="nav-link" onClick={() => void logout()}>
-              Sign out
-            </button>
+            <details
+              className="account-menu"
+              key={path}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
+              }}
+            >
+              <summary>Account</summary>
+              <div className="account-menu-items">
+                <a href="#/orders">Your orders</a>
+                {user.operator && (
+                  <a href="#/operator/access">Manage service</a>
+                )}
+                {user.labOwner && <a href="#/lab">Studio tools</a>}
+                <button onClick={() => void logout()}>Sign out</button>
+              </div>
+            </details>
           ) : (
-            <a className="nav-link" href="#/login">
-              Sign in
-            </a>
+            <a href="#/login">Sign in</a>
           )}
-          <button className="header-cta" onClick={tell}>
-            Tell a story <ArrowRight size={16} />
-          </button>
         </nav>
       </header>
       <div id="main-content" tabIndex={-1}>
@@ -170,13 +175,37 @@ function App() {
         ) : path === "/lab" ? (
           <CreativeLab />
         ) : ["/shelf", "/reading"].includes(path) ? (
-          user?.kind === "private" ? <Almanac key={path} reading={path === "/reading"} /> : <Account login onDone={session} />
+          user?.kind === "private" ? (
+            <Almanac key={path} reading={path === "/reading"} />
+          ) : (
+            <Account login onDone={session} />
+          )
         ) : path.startsWith("/name-page/") ? (
-          user?.kind === "private" ? <MemoryInvitationPage key={path} pageId={path.split("/")[2]} titleOnly /> : <Account login onDone={session} />
+          user?.kind === "private" ? (
+            <MemoryInvitationPage
+              key={path}
+              pageId={path.split("/")[2]}
+              titleOnly
+            />
+          ) : (
+            <Account login onDone={session} />
+          )
         ) : path.startsWith("/memory/") ? (
-          user?.kind === "private" ? <MemoryInvitationPage key={path} pageId={path.split("/")[2]} /> : <Account login onDone={session} />
+          user?.kind === "private" ? (
+            <MemoryInvitationPage key={path} pageId={path.split("/")[2]} />
+          ) : (
+            <Account login onDone={session} />
+          )
         ) : path.startsWith("/interview/") ? (
-          user?.kind === "private" ? <MemoryInterview key={path} sessionId={path.split("/")[2]} user={user} /> : <Account login onDone={session} />
+          user?.kind === "private" ? (
+            <MemoryInterview
+              key={path}
+              sessionId={path.split("/")[2]}
+              user={user}
+            />
+          ) : (
+            <Account login onDone={session} />
+          )
         ) : path === "/orders" ? (
           <OrderHistory />
         ) : path === "/operator/orders" ? (
@@ -406,7 +435,8 @@ function Account({
             Already have a shelf?{" "}
             <a href="#/login" onClick={() => setError(null)}>
               Sign in to your existing shelf
-            </a>.
+            </a>
+            .
           </p>
           {inviteRequired && (
             <p className="small muted">

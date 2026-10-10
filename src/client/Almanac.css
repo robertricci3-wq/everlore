@@ -760,3 +760,166 @@
     transition: none;
   }
 }
+
+/* The family surface chooses a starting point; the catalogue is optional. */
+.story-invitation {
+  display: grid;
+  grid-template-columns: 1fr 0.9fr;
+  align-items: center;
+  gap: clamp(26px, 5vw, 70px);
+  margin: 8px 0 48px;
+  padding: clamp(24px, 4vw, 46px);
+  background: #edeedf;
+  border-radius: 10px;
+}
+.story-invitation-copy h2 {
+  font-size: clamp(32px, 3.8vw, 48px);
+  line-height: 1.2;
+  margin: 18px 0;
+}
+.story-invitation-copy p {
+  color: var(--muted);
+  font-size: 18px;
+  max-width: 36ch;
+  margin-bottom: 26px;
+}
+.story-invitation .button {
+  width: fit-content;
+}
+.story-invitation figure {
+  margin: 0;
+  min-width: 0;
+}
+.story-invitation img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 5px;
+  box-shadow: 0 10px 30px #25312518;
+}
+.story-invitation figcaption {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  padding-top: 12px;
+}
+.suggestion-alternatives {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin-top: 18px;
+}
+.suggestion-alternatives .text-button {
+  font-size: 14px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.story-ideas,
+.story-organize {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.story-ideas > summary,
+.story-organize > summary,
+.studio-research > summary {
+  cursor: pointer;
+  padding: 14px 0;
+  font-size: 16px;
+}
+.story-ideas .almanac-overview {
+  margin-top: 18px;
+}
+.story-organize .almanac-personalize {
+  border: 0;
+  margin-top: 0;
+  padding-top: 12px;
+}
+.almanac-saved {
+  margin: 0 0 30px;
+  padding-top: 0;
+  border-top: 0;
+}
+.almanac-saved .almanac-section-heading h2 {
+  font-size: 24px;
+}
+.studio-research {
+  margin-top: 42px;
+  border-top: 1px solid var(--line);
+}
+.account-menu {
+  position: relative;
+}
+.account-menu > summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 10px 0;
+}
+.account-menu > summary::after {
+  content: "⌄";
+  margin-left: 8px;
+}
+.account-menu-items {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  min-width: 190px;
+  z-index: 30;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  box-shadow: 0 12px 30px #25312520;
+  border-radius: 6px;
+}
+.account-menu-items a,
+.account-menu-items button {
+  display: block;
+  text-align: left;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 13px 14px;
+  font-size: 14px;
+}
+.account-menu-items a:hover,
+.account-menu-items button:hover {
+  background: #edeedf;
+}
+.family-navigation {
+  gap: 26px;
+}
+@media (max-width: 720px) {
+  .site-header {
+    flex-wrap: nowrap;
+    gap: 16px;
+  }
+  .family-navigation {
+    flex: initial;
+    flex-wrap: nowrap;
+    gap: 18px;
+    font-size: 13px;
+  }
+  .site-header .wordmark {
+    font-size: 26px;
+  }
+  .site-header .wordmark svg {
+    display: none;
+  }
+  .story-invitation {
+    grid-template-columns: 1fr;
+    gap: 24px;
+    padding: 25px;
+  }
+  .story-invitation figure {
+    max-width: 360px;
+    margin: auto;
+  }
+  .story-invitation-copy h2 {
+    font-size: 34px;
+  }
+  .story-invitation-copy p {
+    font-size: 17px;
+  }
+}

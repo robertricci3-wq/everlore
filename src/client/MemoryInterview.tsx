@@ -87,6 +87,16 @@ export function MemoryInvitationPage({
           invitationId: invitation?.id,
         },
       );
+      if (
+        !session.session.turns.length &&
+        session.nextPrompt.action === "ask" &&
+        session.nextPrompt.promptId
+      ) {
+        await api(`/interviews/${session.session.id}/turns`, {
+          promptId: session.nextPrompt.promptId,
+          key: `${createKey.current}:opening`,
+        });
+      }
       go(`/interview/${session.session.id}`);
     } catch (cause) {
       setError((cause as Error).message);
@@ -98,7 +108,7 @@ export function MemoryInvitationPage({
     <main className="memory-page enter">
       <a className="back-link" href="#/shelf">
         <ArrowLeft size={17} />
-        Your almanac
+        Your stories
       </a>
       {error && (
         <p className="alert" role="alert">
@@ -371,7 +381,7 @@ export function MemoryInterview({
     <main className="memory-page enter">
       <a className="back-link" href="#/shelf">
         <ArrowLeft size={17} />
-        Your almanac
+        Your stories
       </a>
       {error && (
         <p className="alert" role="alert">

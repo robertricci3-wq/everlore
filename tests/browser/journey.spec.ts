@@ -142,6 +142,7 @@ test("phone: readable stacked spread, all navigation controls and no horizontal 
   });
   await page.getByRole("button", { name: "Next spread" }).click();
   await expect(page.getByText("Spread 2 of 12", { exact: true })).toBeVisible();
+  await page.getByText("Account", { exact: true }).click();
   await page.getByRole("link", { name: "Your orders", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Your orders", exact: true }),
@@ -405,7 +406,7 @@ test("phone: signed-in families see the same public art without creating a demo 
   await inspectShowcase(page);
   await page.goto("/#/shelf");
   await page
-    .getByRole("button", { name: "Explore the illustrations", exact: true })
+    .getByRole("link", { name: "Explore the illustrations", exact: true })
     .click();
   await expect(page).toHaveURL(/#\/example$/);
   expect(await (await page.request.get("/api/projects")).json()).toEqual(

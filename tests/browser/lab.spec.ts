@@ -29,10 +29,18 @@ test("Creative Lab: offline comparison, optional feedback and no approval or rel
   const labAccess = await page.request.get("/api/lab");
   expect(labAccess.status()).toBe(200);
   expect((await labAccess.json()).allowed).toBe(true);
-  await page.goto("/#/lab");
+  await expect(
+    page.getByRole("link", { name: "Studio tools", exact: true }),
+  ).not.toBeVisible();
+  await page.getByText("Account", { exact: true }).click();
+  await page.getByRole("link", { name: "Studio tools", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Engine versions", exact: true }),
+  ).not.toBeVisible();
+  await page.getByText("Research and engine tools", { exact: true }).click();
   await expect(
     page.getByRole("heading", {
-      name: "Find the extraordinary in the ordinary.",
+      name: "Behind the stories.",
     }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Experiments", exact: true }).click();
@@ -106,7 +114,15 @@ test("memory comparison retains a checkpoint, citations and complete reproducibl
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Open your shelf" }).click();
   await expect(page).toHaveURL(/#\/shelf$/);
-  await page.goto("/#/lab");
+  await expect(
+    page.getByRole("link", { name: "Studio tools", exact: true }),
+  ).not.toBeVisible();
+  await page.getByText("Account", { exact: true }).click();
+  await page.getByRole("link", { name: "Studio tools", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Engine versions", exact: true }),
+  ).not.toBeVisible();
+  await page.getByText("Research and engine tools", { exact: true }).click();
   const memory = page.getByRole("region", {
     name: "Guided memory experiments",
   });
@@ -123,6 +139,7 @@ test("memory comparison retains a checkpoint, citations and complete reproducibl
     memory.getByText("2/72 decisions retained", { exact: false }),
   ).toBeVisible();
   await page.reload();
+  await page.getByText("Research and engine tools", { exact: true }).click();
   await memory
     .getByRole("button", { name: "Resume memory comparison" })
     .click();

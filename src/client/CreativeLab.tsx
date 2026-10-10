@@ -81,17 +81,16 @@ export function CreativeLab() {
   return (
     <main className="creative-lab enter">
       <div className="eyebrow">
-        <FlaskConical size={18} /> Everlore Creative Lab
+        <FlaskConical size={18} /> PRIVATE STUDIO TOOLS
       </div>
-      <h1>
-        Find the extraordinary
-        <br />
-        <em>in the ordinary.</em>
-      </h1>
+      <h1>Behind the stories.</h1>
       <p className="lead">
-        A working studio for better family stories. Generate, examine, revise,
-        and compare—then keep only changes supported by the evidence.
+        This workspace is for running and improving Everlore. Families can
+        simply tell a memory and open their books.
       </p>
+      <a className="button" href="#/shelf">
+        Back to your stories <ArrowRight size={18} />
+      </a>
       {error && (
         <p className="alert" role="alert">
           {error}
@@ -111,466 +110,466 @@ export function CreativeLab() {
         </section>
       ) : (
         <>
-          <div className="lab-promise">
-            <span>
-              <strong>Autonomous craft loop</strong>
-              <br />
-              No creative approval stop
-            </span>
-            <span>
-              <strong>Three connected workflows</strong>
-              <br />
-              Story · Art · Complete book
-            </span>
-            <span>
-              <strong>Evidence stays honest</strong>
-              <br />
-              Model judgment ≠ child response
-            </span>
-          </div>
-          <nav className="lab-tabs" aria-label="Lab sections">
-            {(["memory", "experiments", "library", "profiles"] as const).map(
-              (t) => (
-                <button
-                  key={t}
-                  className={tab === t ? "active" : ""}
-                  onClick={() => setTab(t)}
-                >
-                  {t === "memory"
-                    ? "Guided memory"
-                    : t === "experiments"
-                      ? "Experiments"
-                      : t === "library"
-                        ? "Craft library"
-                        : "Engine versions"}
-                </button>
-              ),
-            )}
-          </nav>
-          {tab === "memory" ? (
-            <MemoryLab />
-          ) : tab === "library" ? (
-            <section>
-              <p className="muted">
-                Critical methods from literature, oral language and
-                illustration. Sources, interpretations and hypotheses stay
-                distinct. These are research-informed tools, not claims of
-                expert authorship.
-              </p>
-              <div className="lab-library">
-                {data.principles.map((p) => (
-                  <article className="lab-panel" key={p.id}>
-                    <span className="eyebrow">
-                      {p.area} · {p.perspective}
-                    </span>
-                    <h2>{p.title}</h2>
-                    <p>{p.interpretation}</p>
-                    {p.study && (
+          <details className="studio-research">
+            <summary>Research and engine tools</summary>
+            <p className="muted">
+              Internal experiments and release controls. Opening these tools
+              does not start a run or spend credits.
+            </p>
+            <nav className="lab-tabs" aria-label="Lab sections">
+              {(["memory", "experiments", "library", "profiles"] as const).map(
+                (t) => (
+                  <button
+                    key={t}
+                    className={tab === t ? "active" : ""}
+                    onClick={() => setTab(t)}
+                  >
+                    {t === "memory"
+                      ? "Guided memory"
+                      : t === "experiments"
+                        ? "Experiments"
+                        : t === "library"
+                          ? "Craft library"
+                          : "Engine versions"}
+                  </button>
+                ),
+              )}
+            </nav>
+            {tab === "memory" ? (
+              <MemoryLab />
+            ) : tab === "library" ? (
+              <section>
+                <p className="muted">
+                  Critical methods from literature, oral language and
+                  illustration. Sources, interpretations and hypotheses stay
+                  distinct. These are research-informed tools, not claims of
+                  expert authorship.
+                </p>
+                <div className="lab-library">
+                  {data.principles.map((p) => (
+                    <article className="lab-panel" key={p.id}>
+                      <span className="eyebrow">
+                        {p.area} · {p.perspective}
+                      </span>
+                      <h2>{p.title}</h2>
+                      <p>{p.interpretation}</p>
+                      {p.study && (
+                        <p>
+                          <strong>Original Everlore example:</strong>{" "}
+                          {p.study.originalExample}
+                          <br />
+                          <small>
+                            Technique hypothesis; creative improvement not yet
+                            demonstrated.
+                          </small>
+                        </p>
+                      )}
                       <p>
-                        <strong>Original Everlore example:</strong>{" "}
-                        {p.study.originalExample}
-                        <br />
-                        <small>
-                          Technique hypothesis; creative improvement not yet
-                          demonstrated.
-                        </small>
+                        <strong>Try:</strong> {p.application}
                       </p>
-                    )}
+                      <p>
+                        <strong>Watch for:</strong> {p.counterexample}
+                      </p>
+                      <p>
+                        <strong>Evaluate:</strong> {p.evaluation}
+                      </p>
+                      <a href={p.source.url} target="_blank" rel="noreferrer">
+                        {p.source.title} ↗
+                      </a>
+                      <p className="muted">
+                        Source status: {p.source.status.replaceAll("_", " ")} ·{" "}
+                        {p.evidence.length} retained experiment findings
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : tab === "profiles" ? (
+              <section>
+                <p className="muted">
+                  Rules, prompts, model settings and rubrics are frozen
+                  together. Releases affect new jobs; existing books and jobs
+                  retain their version.
+                </p>
+                {data.profiles.map((p) => (
+                  <article className="lab-panel" key={p.hash}>
+                    <span className="eyebrow">
+                      {p.hash === data.activeHash
+                        ? "Active engine"
+                        : "Candidate / historical version"}
+                    </span>
+                    <h2>{p.name}</h2>
                     <p>
-                      <strong>Try:</strong> {p.application}
+                      {p.change.amendment ||
+                        "The starting implementation; creative performance still requires live evidence."}
                     </p>
-                    <p>
-                      <strong>Watch for:</strong> {p.counterexample}
-                    </p>
-                    <p>
-                      <strong>Evaluate:</strong> {p.evaluation}
-                    </p>
-                    <a href={p.source.url} target="_blank" rel="noreferrer">
-                      {p.source.title} ↗
-                    </a>
+                    <code className="lab-hash">{p.hash}</code>
                     <p className="muted">
-                      Source status: {p.source.status.replaceAll("_", " ")} ·{" "}
-                      {p.evidence.length} retained experiment findings
+                      {p.models.text} · {p.models.image} · {p.rubric.version}
                     </p>
                   </article>
                 ))}
-              </div>
-            </section>
-          ) : tab === "profiles" ? (
-            <section>
-              <p className="muted">
-                Rules, prompts, model settings and rubrics are frozen together.
-                Releases affect new jobs; existing books and jobs retain their
-                version.
-              </p>
-              {data.profiles.map((p) => (
-                <article className="lab-panel" key={p.hash}>
-                  <span className="eyebrow">
-                    {p.hash === data.activeHash
-                      ? "Active engine"
-                      : "Candidate / historical version"}
-                  </span>
-                  <h2>{p.name}</h2>
+                <h2>Release history</h2>
+                {!data.releases.length ? (
                   <p>
-                    {p.change.amendment ||
-                      "The starting implementation; creative performance still requires live evidence."}
+                    No candidate has been promoted. Offline examples cannot
+                    activate an engine release.
                   </p>
-                  <code className="lab-hash">{p.hash}</code>
-                  <p className="muted">
-                    {p.models.text} · {p.models.image} · {p.rubric.version}
+                ) : (
+                  data.releases.map((r) => (
+                    <article className="lab-panel" key={r.id}>
+                      <strong>{r.action.replaceAll("_", " ")}</strong>
+                      <p className="muted">{r.createdAt}</p>
+                      <code className="lab-hash">{r.profileHash}</code>
+                      {r.profileHash === data.activeHash && (
+                        <button
+                          className="button secondary"
+                          disabled={busy}
+                          onClick={() =>
+                            void action(() =>
+                              api(`/lab/releases/${r.id}/rollback`, {}),
+                            )
+                          }
+                        >
+                          <RotateCcw size={16} /> Roll back this release
+                        </button>
+                      )}
+                    </article>
+                  ))
+                )}
+              </section>
+            ) : (
+              <>
+                <section className="lab-panel">
+                  <div className="eyebrow">One mechanism at a time</div>
+                  <h2>Start a controlled comparison</h2>
+                  <p>
+                    Identical memories. Frozen criteria. Reversed comparison
+                    order. Every attempt retained, including failures. The
+                    engine compares and decides automatically.
                   </p>
-                </article>
-              ))}
-              <h2>Release history</h2>
-              {!data.releases.length ? (
-                <p>
-                  No candidate has been promoted. Offline examples cannot
-                  activate an engine release.
-                </p>
-              ) : (
-                data.releases.map((r) => (
-                  <article className="lab-panel" key={r.id}>
-                    <strong>{r.action.replaceAll("_", " ")}</strong>
-                    <p className="muted">{r.createdAt}</p>
-                    <code className="lab-hash">{r.profileHash}</code>
-                    {r.profileHash === data.activeHash && (
-                      <button
-                        className="button secondary"
-                        disabled={busy}
-                        onClick={() =>
-                          void action(() =>
-                            api(`/lab/releases/${r.id}/rollback`, {}),
-                          )
-                        }
+                  <div className="lab-form">
+                    <label>
+                      Craft question
+                      <select
+                        value={mechanism}
+                        onChange={(e) => setMechanism(e.target.value)}
                       >
-                        <RotateCcw size={16} /> Roll back this release
-                      </button>
-                    )}
-                  </article>
-                ))
-              )}
-            </section>
-          ) : (
-            <>
-              <section className="lab-panel">
-                <div className="eyebrow">One mechanism at a time</div>
-                <h2>Start a controlled comparison</h2>
-                <p>
-                  Identical memories. Frozen criteria. Reversed comparison
-                  order. Every attempt retained, including failures. The engine
-                  compares and decides automatically.
-                </p>
-                <div className="lab-form">
-                  <label>
-                    Craft question
-                    <select
-                      value={mechanism}
-                      onChange={(e) => setMechanism(e.target.value)}
-                    >
-                      {data.agenda.map((a) => (
-                        <option value={a.id} key={a.id}>
-                          {a.title}
+                        {data.agenda.map((a) => (
+                          <option value={a.id} key={a.id}>
+                            {a.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Execution
+                      <select
+                        value={mode}
+                        onChange={(e) => setMode(e.target.value as typeof mode)}
+                      >
+                        <option value="offline">
+                          Offline · verify the loop
                         </option>
-                      ))}
+                        <option value="live">
+                          Live · generate and evaluate
+                        </option>
+                      </select>
+                    </label>
+                    <label>
+                      Runs per case
+                      <select
+                        value={replicates}
+                        onChange={(e) => setReplicates(Number(e.target.value))}
+                      >
+                        <option value={1}>1 · exploration only</option>
+                        <option value={3}>3 · repeatability campaign</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label>
+                    Evaluation purpose
+                    <select
+                      value={evaluationPhase}
+                      onChange={(e) =>
+                        setEvaluationPhase(
+                          e.target.value as typeof evaluationPhase,
+                        )
+                      }
+                    >
+                      <option value="development">Development memories</option>
+                      <option value="release">
+                        Held-out release evaluation
+                      </option>
                     </select>
                   </label>
                   <label>
-                    Execution
+                    Comparison scope
                     <select
-                      value={mode}
-                      onChange={(e) => setMode(e.target.value as typeof mode)}
+                      value={scope}
+                      onChange={(e) => setScope(e.target.value as typeof scope)}
                     >
-                      <option value="offline">Offline · verify the loop</option>
-                      <option value="live">Live · generate and evaluate</option>
+                      <option value="stage">Focused story or art stage</option>
+                      <option value="book">
+                        Complete book · words, pictures and layout
+                      </option>
                     </select>
                   </label>
-                  <label>
-                    Runs per case
-                    <select
-                      value={replicates}
-                      onChange={(e) => setReplicates(Number(e.target.value))}
-                    >
-                      <option value={1}>1 · exploration only</option>
-                      <option value={3}>3 · repeatability campaign</option>
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  Evaluation purpose
-                  <select
-                    value={evaluationPhase}
-                    onChange={(e) =>
-                      setEvaluationPhase(
-                        e.target.value as typeof evaluationPhase,
+                  {evaluationPhase === "release" && (
+                    <label>
+                      Matched development comparison of this candidate
+                      <select
+                        value={releasePrereq}
+                        onChange={(e) => setReleasePrereq(e.target.value)}
+                      >
+                        <option value="">
+                          Choose retained development evidence
+                        </option>
+                        {data.experiments
+                          .filter(
+                            (e) =>
+                              e.mode === mode &&
+                              ["complete", "inconclusive"].includes(e.status),
+                          )
+                          .map((e) => (
+                            <option key={e.id} value={e.id}>
+                              {e.title}
+                            </option>
+                          ))}
+                      </select>
+                      <small>
+                        The server verifies candidate, baseline and comparison
+                        scope match.
+                      </small>
+                    </label>
+                  )}
+                  {scope === "book" && mode === "live" && (
+                    <div className="lab-form">
+                      <label>
+                        Completed story experiment
+                        <select
+                          value={storyPrereq}
+                          onChange={(e) => setStoryPrereq(e.target.value)}
+                        >
+                          <option value="">Choose prior evidence</option>
+                          {data.experiments
+                            .filter(
+                              (e) =>
+                                e.lane === "story" &&
+                                e.mode === "live" &&
+                                ["complete", "promoted"].includes(e.status),
+                            )
+                            .map((e) => (
+                              <option value={e.id} key={e.id}>
+                                {e.title}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                      <label>
+                        Completed art experiment
+                        <select
+                          value={artPrereq}
+                          onChange={(e) => setArtPrereq(e.target.value)}
+                        >
+                          <option value="">Choose prior evidence</option>
+                          {data.experiments
+                            .filter(
+                              (e) =>
+                                e.lane === "art" &&
+                                e.mode === "live" &&
+                                ["complete", "promoted"].includes(e.status),
+                            )
+                            .map((e) => (
+                              <option value={e.id} key={e.id}>
+                                {e.title}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+                  <p className="muted">
+                    {data.agenda.find((a) => a.id === mechanism)?.risk}
+                  </p>
+                  {mode === "live" ? (
+                    <>
+                      <label>
+                        Separate experiment allowance (USD)
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          value={allowance}
+                          onChange={(e) => setAllowance(e.target.value)}
+                          placeholder="Choose an explicit amount"
+                        />
+                      </label>
+                      <label className="check-label">
+                        <input
+                          type="checkbox"
+                          checked={authorized}
+                          onChange={(e) => setAuthorized(e.target.checked)}
+                        />{" "}
+                        I authorize this experiment to send the labeled
+                        synthetic cases to the provider, within this separate
+                        allowance.
+                      </label>
+                      <p className="muted">
+                        {data.providerConfigured
+                          ? "Provider configured."
+                          : "Provider connection is still needed."}{" "}
+                        Request reserves are estimates, not actual billing. A
+                        low allowance stops the experiment at its checkpoint.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="lab-note">
+                      Offline runs use visibly labeled control-flow
+                      placeholders. They make no provider calls and cannot prove
+                      creative improvement or promote a release.
+                    </p>
+                  )}
+                  <button
+                    className="button"
+                    disabled={
+                      busy ||
+                      (mode === "live" &&
+                        (!authorized ||
+                          !Number(allowance) ||
+                          !data.providerConfigured))
+                    }
+                    onClick={() =>
+                      void action(async () => {
+                        const a = data.agenda.find((a) => a.id === mechanism)!;
+                        const r = await api<{ id: string }>(
+                          "/lab/experiments",
+                          {
+                            evaluationPhase,
+                            mechanism,
+                            lane:
+                              scope === "book"
+                                ? "book"
+                                : a.target === "art"
+                                  ? "art"
+                                  : "story",
+                            prerequisiteIds: [
+                              ...(scope === "book" && mode === "live"
+                                ? [storyPrereq, artPrereq]
+                                : []),
+                              ...(evaluationPhase === "release"
+                                ? [releasePrereq]
+                                : []),
+                            ].filter(Boolean),
+                            mode,
+                            replicates,
+                            maxCents:
+                              mode === "live"
+                                ? Math.round(Number(allowance) * 100)
+                                : 0,
+                            authorizeCosts: authorized,
+                          },
+                        );
+                        setSelected(r.id);
+                      })
+                    }
+                  >
+                    Freeze this experiment <ArrowRight size={18} />
+                  </button>{" "}
+                  <button
+                    className="button secondary"
+                    disabled={
+                      busy ||
+                      (mode === "live" &&
+                        (!authorized ||
+                          !Number(allowance) ||
+                          !data.providerConfigured))
+                    }
+                    onClick={() =>
+                      void action(() =>
+                        api("/lab/sessions", {
+                          mode,
+                          lane:
+                            data.agenda.find((a) => a.id === mechanism)
+                              ?.target === "art"
+                              ? "art"
+                              : "story",
+                          maxIterations: 2,
+                          maxCents:
+                            mode === "live"
+                              ? Math.round(Number(allowance) * 100)
+                              : 0,
+                          authorizeCosts: authorized,
+                        }),
                       )
                     }
                   >
-                    <option value="development">Development memories</option>
-                    <option value="release">Held-out release evaluation</option>
-                  </select>
-                </label>
-                <label>
-                  Comparison scope
-                  <select
-                    value={scope}
-                    onChange={(e) => setScope(e.target.value as typeof scope)}
-                  >
-                    <option value="stage">Focused story or art stage</option>
-                    <option value="book">
-                      Complete book · words, pictures and layout
-                    </option>
-                  </select>
-                </label>
-                {evaluationPhase === "release" && (
-                  <label>
-                    Matched development comparison of this candidate
-                    <select
-                      value={releasePrereq}
-                      onChange={(e) => setReleasePrereq(e.target.value)}
-                    >
-                      <option value="">
-                        Choose retained development evidence
-                      </option>
-                      {data.experiments
-                        .filter(
-                          (e) =>
-                            e.mode === mode &&
-                            ["complete", "inconclusive"].includes(e.status),
-                        )
-                        .map((e) => (
-                          <option key={e.id} value={e.id}>
-                            {e.title}
-                          </option>
-                        ))}
-                    </select>
-                    <small>
-                      The server verifies candidate, baseline and comparison
-                      scope match.
-                    </small>
-                  </label>
-                )}
-                {scope === "book" && mode === "live" && (
-                  <div className="lab-form">
-                    <label>
-                      Completed story experiment
-                      <select
-                        value={storyPrereq}
-                        onChange={(e) => setStoryPrereq(e.target.value)}
-                      >
-                        <option value="">Choose prior evidence</option>
-                        {data.experiments
-                          .filter(
-                            (e) =>
-                              e.lane === "story" &&
-                              e.mode === "live" &&
-                              ["complete", "promoted"].includes(e.status),
-                          )
-                          .map((e) => (
-                            <option value={e.id} key={e.id}>
-                              {e.title}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <label>
-                      Completed art experiment
-                      <select
-                        value={artPrereq}
-                        onChange={(e) => setArtPrereq(e.target.value)}
-                      >
-                        <option value="">Choose prior evidence</option>
-                        {data.experiments
-                          .filter(
-                            (e) =>
-                              e.lane === "art" &&
-                              e.mode === "live" &&
-                              ["complete", "promoted"].includes(e.status),
-                          )
-                          .map((e) => (
-                            <option value={e.id} key={e.id}>
-                              {e.title}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                  </div>
-                )}
-                <p className="muted">
-                  {data.agenda.find((a) => a.id === mechanism)?.risk}
-                </p>
-                {mode === "live" ? (
-                  <>
-                    <label>
-                      Separate experiment allowance (USD)
-                      <input
-                        type="number"
-                        min="0.01"
-                        step="0.01"
-                        value={allowance}
-                        onChange={(e) => setAllowance(e.target.value)}
-                        placeholder="Choose an explicit amount"
-                      />
-                    </label>
-                    <label className="check-label">
-                      <input
-                        type="checkbox"
-                        checked={authorized}
-                        onChange={(e) => setAuthorized(e.target.checked)}
-                      />{" "}
-                      I authorize this experiment to send the labeled synthetic
-                      cases to the provider, within this separate allowance.
-                    </label>
-                    <p className="muted">
-                      {data.providerConfigured
-                        ? "Provider configured."
-                        : "Provider connection is still needed."}{" "}
-                      Request reserves are estimates, not actual billing. A low
-                      allowance stops the experiment at its checkpoint.
-                    </p>
-                  </>
-                ) : (
-                  <p className="lab-note">
-                    Offline runs use visibly labeled control-flow placeholders.
-                    They make no provider calls and cannot prove creative
-                    improvement or promote a release.
+                    Run a two-iteration learning session
+                  </button>
+                  <p className="muted">
+                    A learning session selects the next craft questions
+                    automatically. It shares the entered allowance across two
+                    experiments, uses three runs per case, and stops after two
+                    iterations without demonstrated improvement. No scheduled
+                    restart.
                   </p>
-                )}
-                <button
-                  className="button"
-                  disabled={
-                    busy ||
-                    (mode === "live" &&
-                      (!authorized ||
-                        !Number(allowance) ||
-                        !data.providerConfigured))
-                  }
-                  onClick={() =>
-                    void action(async () => {
-                      const a = data.agenda.find((a) => a.id === mechanism)!;
-                      const r = await api<{ id: string }>("/lab/experiments", {
-                        evaluationPhase,
-                        mechanism,
-                        lane:
-                          scope === "book"
-                            ? "book"
-                            : a.target === "art"
-                              ? "art"
-                              : "story",
-                        prerequisiteIds: [
-                          ...(scope === "book" && mode === "live"
-                            ? [storyPrereq, artPrereq]
-                            : []),
-                          ...(evaluationPhase === "release"
-                            ? [releasePrereq]
-                            : []),
-                        ].filter(Boolean),
-                        mode,
-                        replicates,
-                        maxCents:
-                          mode === "live"
-                            ? Math.round(Number(allowance) * 100)
-                            : 0,
-                        authorizeCosts: authorized,
-                      });
-                      setSelected(r.id);
-                    })
-                  }
-                >
-                  Freeze this experiment <ArrowRight size={18} />
-                </button>{" "}
-                <button
-                  className="button secondary"
-                  disabled={
-                    busy ||
-                    (mode === "live" &&
-                      (!authorized ||
-                        !Number(allowance) ||
-                        !data.providerConfigured))
-                  }
-                  onClick={() =>
-                    void action(() =>
-                      api("/lab/sessions", {
-                        mode,
-                        lane:
-                          data.agenda.find((a) => a.id === mechanism)
-                            ?.target === "art"
-                            ? "art"
-                            : "story",
-                        maxIterations: 2,
-                        maxCents:
-                          mode === "live"
-                            ? Math.round(Number(allowance) * 100)
-                            : 0,
-                        authorizeCosts: authorized,
-                      }),
-                    )
-                  }
-                >
-                  Run a two-iteration learning session
-                </button>
-                <p className="muted">
-                  A learning session selects the next craft questions
-                  automatically. It shares the entered allowance across two
-                  experiments, uses three runs per case, and stops after two
-                  iterations without demonstrated improvement. No scheduled
-                  restart.
-                </p>
-                {data.sessions.map((s) => (
-                  <div className="lab-note" key={s.id}>
-                    <strong>
-                      {s.status.replaceAll("_", " ")} · {s.iteration} completed
-                      iterations
-                    </strong>
-                    <p>{s.checkpoint}</p>
-                    {["running", "paused"].includes(s.status) && (
-                      <button
-                        className="button secondary"
-                        onClick={() =>
-                          void action(() =>
-                            api(
-                              `/lab/sessions/${s.id}/${s.status === "paused" ? "resume" : "pause"}`,
-                              {},
-                            ),
-                          )
-                        }
-                      >
-                        {s.status === "paused"
-                          ? "Resume session"
-                          : "Pause session"}
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </section>
-              <div className="lab-workspace">
-                <aside className="lab-experiments">
-                  <h2>Retained experiments</h2>
-                  {!data.experiments.length && (
-                    <p>Your first comparison begins above.</p>
-                  )}
-                  {data.experiments.map((e) => (
-                    <button
-                      className={`lab-experiment ${current?.id === e.id ? "selected" : ""}`}
-                      key={e.id}
-                      onClick={() => setSelected(e.id)}
-                    >
-                      <strong>{e.title}</strong>
-                      <span>
-                        {e.mode} · {e.lane} · {e.status.replaceAll("_", " ")}
-                      </span>
-                      <span>
-                        {e.summary.complete}/{e.summary.total} artifacts
-                        retained
-                      </span>
-                    </button>
+                  {data.sessions.map((s) => (
+                    <div className="lab-note" key={s.id}>
+                      <strong>
+                        {s.status.replaceAll("_", " ")} · {s.iteration}{" "}
+                        completed iterations
+                      </strong>
+                      <p>{s.checkpoint}</p>
+                      {["running", "paused"].includes(s.status) && (
+                        <button
+                          className="button secondary"
+                          onClick={() =>
+                            void action(() =>
+                              api(
+                                `/lab/sessions/${s.id}/${s.status === "paused" ? "resume" : "pause"}`,
+                                {},
+                              ),
+                            )
+                          }
+                        >
+                          {s.status === "paused"
+                            ? "Resume session"
+                            : "Pause session"}
+                        </button>
+                      )}
+                    </div>
                   ))}
-                </aside>
-                {current && (
-                  <ExperimentPanel e={current} busy={busy} action={action} />
-                )}
-              </div>
-            </>
-          )}
+                </section>
+                <div className="lab-workspace">
+                  <aside className="lab-experiments">
+                    <h2>Retained experiments</h2>
+                    {!data.experiments.length && (
+                      <p>Your first comparison begins above.</p>
+                    )}
+                    {data.experiments.map((e) => (
+                      <button
+                        className={`lab-experiment ${current?.id === e.id ? "selected" : ""}`}
+                        key={e.id}
+                        onClick={() => setSelected(e.id)}
+                      >
+                        <strong>{e.title}</strong>
+                        <span>
+                          {e.mode} · {e.lane} · {e.status.replaceAll("_", " ")}
+                        </span>
+                        <span>
+                          {e.summary.complete}/{e.summary.total} artifacts
+                          retained
+                        </span>
+                      </button>
+                    ))}
+                  </aside>
+                  {current && (
+                    <ExperimentPanel e={current} busy={busy} action={action} />
+                  )}
+                </div>
+              </>
+            )}
+          </details>
         </>
       )}
     </main>
