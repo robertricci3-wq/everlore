@@ -942,3 +942,24 @@ for (const resolves of [false, true]) test(`one explicitly authorized scene atte
     }
   } finally { t.close(); }
 });
+
+
+test("semantic correction forwards correctness findings separately from artistic notes", async () => {
+  const t = setup(), p = new StudioFake();
+  const original = p.structured.bind(p);
+  p.structured = async (name, schema, instructions, data, images) => {
+    if (name.includes("requirements_v4_review")) p.incorrectArt = true;
+    const result = await original(name, schema, instructions, data, images);
+    if (name.includes("requirements_v4_review")) return { ...result, defects: ["Simplify brushwork"], correctnessDefects: ["Remove the invented extra child"] };
+    return result;
+  };
+  try {
+    queueStudio(t.store, t.project(), { ...consent, autonomous: true }, testConfig);
+    await runStudio(t.store, p, testConfig);
+    assert.equal(p.imagePrompts.length, 3);
+    for (const prompt of p.imagePrompts.slice(1)) {
+      assert(prompt.includes("Remove the invented extra child"));
+      assert(prompt.includes("Simplify brushwork"));
+    }
+  } finally { t.close(); }
+});

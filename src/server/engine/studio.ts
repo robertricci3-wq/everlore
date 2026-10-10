@@ -2129,7 +2129,9 @@ export async function runStudio(
               ? [...refs, store.readAsset(job.projectId, previous)]
               : refs,
           ));
-        const review = await editorial(
+        // Retain completed critiques when repair-message construction changes.
+        // The enclosing scene/reference step still pins source, profile and canon.
+        const review = studioCached<z.infer<typeof ProductionImageReview>>(store, job.id, `${name}_requirements_v4_review_${attempt + 1}`) ?? await editorial(
           `${name}_requirements_v4_review_${attempt + 1}`,
           ProductionImageReview,
           artReviewInstruction,
@@ -2154,8 +2156,9 @@ export async function runStudio(
           [store.readAsset(job.projectId, picture), ...refs],
         );
         if (imageGood(resolved)) return picture;
-        defects = resolved.defects.length
-          ? resolved.defects
+        const actionableDefects = [...new Set([...resolved.correctnessDefects, ...resolved.defects])];
+        defects = actionableDefects.length
+          ? actionableDefects
           : [
               "Improve identity, physical coherence, house style and readable action against the supplied references.",
             ];

@@ -225,6 +225,7 @@ export const fixtureScenes = ScenePlan.parse({
 export class StudioFake implements Provider {
   calls: string[] = [];
   imageReferenceCounts: number[] = [];
+  imagePrompts: string[] = [];
   onStructured?: (name: string) => void;
   failAt = "";
   weak = false;
@@ -381,6 +382,7 @@ export class StudioFake implements Provider {
     return schema.parse(result);
   }
   async image(_prompt: string, refs?: Buffer | Buffer[]) {
+    this.imagePrompts.push(_prompt);
     this.calls.push(refs ? "image_with_references" : "image_new");
     this.imageReferenceCounts.push(
       Array.isArray(refs) ? refs.length : refs ? 1 : 0,
