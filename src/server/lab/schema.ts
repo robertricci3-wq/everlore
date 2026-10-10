@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { migrateMemoryLab } from "./memory-schema.js";
 export function migrateLab(db: DatabaseSync) {
   db.exec(`
 CREATE TABLE IF NOT EXISTS lab_sessions(id TEXT PRIMARY KEY,ownerId TEXT NOT NULL REFERENCES users(id),plan TEXT NOT NULL,status TEXT NOT NULL,iteration INTEGER NOT NULL,noProgress INTEGER NOT NULL,currentExperiment TEXT,checkpoint TEXT NOT NULL,createdAt TEXT NOT NULL);
@@ -14,4 +15,5 @@ CREATE TABLE IF NOT EXISTS lab_observations(id TEXT PRIMARY KEY,experimentId TEX
 CREATE TABLE IF NOT EXISTS lab_comparisons(experimentId TEXT NOT NULL REFERENCES lab_experiments(id),pairKey TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(experimentId,pairKey));
 CREATE TABLE IF NOT EXISTS lab_releases(id TEXT PRIMARY KEY,experimentId TEXT REFERENCES lab_experiments(id),action TEXT NOT NULL,profileHash TEXT NOT NULL,previousHash TEXT NOT NULL,notes TEXT NOT NULL,createdAt TEXT NOT NULL);
 `);
+  migrateMemoryLab(db);
 }

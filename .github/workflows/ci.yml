@@ -54,4 +54,12 @@ jobs:
             console.log("Direct Node production process is healthy with immutable /app.");
           '
           expected_code_hash="$(node --import tsx --input-type=module -e 'import { codeHash } from "./src/server/lab/service.ts"; process.stdout.write(codeHash())')"
-          docker exec --user node --env EVERLORE_EXPECTED_CODE_HASH="$expected_code_hash" everlore-ci node --import tsx --test tests/hosted-lab.test.ts
+          docker exec --user node --env EVERLORE_EXPECTED_CODE_HASH="$expected_code_hash" --env EVERLORE_HOSTED_QUALITY_DIR=/var/data/everlore-quality everlore-ci node --import tsx --test tests/hosted-lab.test.ts
+          docker run --rm --read-only --tmpfs /var/data --entrypoint sh everlore:ci -c '
+            mkdir -p /var/data/everlore
+            ln -s /var/data/everlore /var/data/everlore-quality
+            if /app/scripts/docker-entrypoint.sh true; then
+              echo "Symlinked quality storage must be rejected." >&2
+              exit 1
+            fi
+          '

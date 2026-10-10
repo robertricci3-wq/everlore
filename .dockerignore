@@ -8,6 +8,8 @@
 !tests
 !scripts/*.ts
 !scripts/docker-entrypoint.sh
+!scripts/run.sh
+!scripts/quality-loop.sh
 !scripts
 !public
 !public/fonts

@@ -13,9 +13,19 @@ if [ "$(id -u)" = 0 ]; then
     echo 'Container data directory must not be a symlink.' >&2
     exit 1
   fi
+  # Quality sessions are synthetic and must never open the family store. Give
+  # them a separate, fixed sibling on the same persistent disk.
+  quality_dir=/var/data/everlore-quality
+  if [ -L "$quality_dir" ]; then
+    echo 'Container quality directory must not be a symlink.' >&2
+    exit 1
+  fi
   mkdir -p "$DATA_DIR"
   chown -Rh node:node "$DATA_DIR"
   chmod 700 "$DATA_DIR"
+  mkdir -p "$quality_dir"
+  chown -Rh node:node "$quality_dir"
+  chmod 700 "$quality_dir"
   exec gosu node "$@"
 fi
 exec "$@"

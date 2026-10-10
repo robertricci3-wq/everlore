@@ -442,7 +442,7 @@ export function bookCostReport(s: Store, actor: string): CostReport {
       mode: string;
       revision: number;
     }>(
-      "SELECT id,title,status,mode,revision FROM projects ORDER BY createdAt DESC,id",
+      "SELECT id,title,status,mode,revision FROM projects WHERE NOT EXISTS(SELECT 1 FROM lab_runs WHERE lab_runs.projectId=projects.id) ORDER BY createdAt DESC,id",
     )
     .map((p) => {
       const group = jobs.filter((j) => j.projectId === p.id),

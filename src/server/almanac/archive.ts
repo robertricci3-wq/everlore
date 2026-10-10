@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LEGACY_MEMORY_GUIDE } from "../../shared/memoryGuide.js";
 import {
   InterviewSession,
   InterviewTurn,
@@ -334,7 +335,7 @@ export function importInterviewArchive(
       s.putAsset(sourceProjectId, s.readAsset(projectId, audioHash), "audio");
   } else s.run("UPDATE projects SET status='interview' WHERE id=?", projectId);
   s.run(
-    "INSERT INTO almanac_sessions VALUES(?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)",
+    "INSERT INTO almanac_sessions(id,ownerId,projectId,pageId,invitationId,invitationVersion,invitation,status,requestKey,consentAt,aiConsentAt,createdAt,updatedAt,purpose,guideProfile) VALUES(?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?)",
     sessionId,
     ownerId,
     sourceProjectId,
@@ -348,6 +349,7 @@ export function importInterviewArchive(
     archive.session.createdAt,
     at,
     archive.session.purpose ?? "memory",
+    canonical(archive.session.guideProfile ?? LEGACY_MEMORY_GUIDE),
   );
   const turnIds = new Map(archive.session.turns.map((turn) => [turn.id, id()]));
   for (const old of archive.session.turns) {

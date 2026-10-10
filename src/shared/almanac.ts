@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  LEGACY_MEMORY_GUIDE,
+  MemoryGuideProfile,
+  type MemoryGuideProfileRecord,
+} from "./memoryGuide.js";
 import { Transcript } from "./contracts.js";
 import {
   MEMORY_INVITATIONS,
@@ -114,6 +119,8 @@ export const InterviewSession = z
     pageId: z.string().min(1),
     invitationId: z.string().min(1),
     invitationVersion: z.string().min(1),
+    // Optional only for pre-profile sessions and checksum-bearing old archives.
+    guideProfile: MemoryGuideProfile.optional(),
     status: z.enum(["open", "finished"]),
     turns: z.array(InterviewTurn),
     createdAt: z.string().min(1),
@@ -292,7 +299,10 @@ export function buildMemoryBrief(
 }
 export const GuideDecision = z.object({
   version: z.literal(1),
-  guideVersion: z.literal(MEMORY_GUIDE_VERSION),
+  guideVersion: z.enum([
+    "memory-guide-rules-v1",
+    "memory-guide-complete-ritual-v1",
+  ]),
   method: z.literal("rule_based"),
   modelValidated: z.literal(false),
   action: z.enum(["ask", "finish", "wait"]),
@@ -307,7 +317,9 @@ export function nextMemoryPrompt(
   invitation: MemoryInvitationRecord,
   input: MemoryBriefRecord,
   turns: InterviewTurnRecord[],
+  profileInput: MemoryGuideProfileRecord = LEGACY_MEMORY_GUIDE,
 ): GuideDecisionRecord {
+  const profile = MemoryGuideProfile.parse(profileInput);
   const brief = MemoryBrief.parse(input);
   const result = (
     action: GuideDecisionRecord["action"],
@@ -317,7 +329,7 @@ export function nextMemoryPrompt(
   ) =>
     GuideDecision.parse({
       version: 1,
-      guideVersion: MEMORY_GUIDE_VERSION,
+      guideVersion: profile.id,
       method: "rule_based",
       modelValidated: false,
       action,
@@ -377,6 +389,7 @@ export function nextMemoryPrompt(
     ...brief.answeredPromptIds,
     ...turns.map((turn) => turn.promptId),
   ]);
+  let completeRitualEvidence: MemoryEvidenceRecord[] = [];
   for (const prompt of invitation.followUps) {
     if (asked.has(prompt.id)) continue;
     let eligible = false,
@@ -388,10 +401,28 @@ export function nextMemoryPrompt(
         break;
       case "ritual_without_event":
         evidence = signals("ritual");
+        if (
+          profile.suppressCompleteRitualPrompt &&
+          evidence.length > 0 &&
+          !signals("event").length &&
+          !signals("uncertainty").length &&
+          signals("detail").length > 0 &&
+          signals("stated_meaning").length > 0
+        )
+          completeRitualEvidence = [
+            ...evidence,
+            ...signals("detail"),
+            ...signals("stated_meaning"),
+          ];
         eligible =
           evidence.length > 0 &&
           !signals("event").length &&
-          !signals("uncertainty").length;
+          !signals("uncertainty").length &&
+          !(
+            profile.suppressCompleteRitualPrompt &&
+            signals("detail").length > 0 &&
+            signals("stated_meaning").length > 0
+          );
         break;
       case "missing_detail":
         eligible = !signals("detail").length && !signals("uncertainty").length;
@@ -410,6 +441,10 @@ export function nextMemoryPrompt(
   }
   return result(
     "finish",
-    "There is enough to preserve this telling. Further memories can be added later.",
+    completeRitualEvidence.length
+      ? "This recurring memory already includes a distinctive detail and stated meaning. A separate occasion is optional; further memories can be added later."
+      : "There is enough to preserve this telling. Further memories can be added later.",
+    undefined,
+    completeRitualEvidence,
   );
 }

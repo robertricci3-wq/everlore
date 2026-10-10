@@ -70,4 +70,6 @@ export function migrateAlmanac(db: DatabaseSync) {
     db.exec(
       "ALTER TABLE almanac_sessions ADD COLUMN purpose TEXT NOT NULL DEFAULT 'memory' CHECK(purpose IN ('memory','page_title'))",
     );
+  if (!columns.some((column) => column.name === "guideProfile"))
+    db.exec("ALTER TABLE almanac_sessions ADD COLUMN guideProfile TEXT");
 }

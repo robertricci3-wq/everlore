@@ -47,6 +47,7 @@ const scripts = [
   "prodigi.ts",
   "stripe.ts",
   "lab.ts",
+  "quality-loop.sh",
   "docker-entrypoint.sh",
   "package-release.ts",
 ];
@@ -199,6 +200,22 @@ Provision the operator in the Render service shell: temporarily configure EVERLO
 Private runtime settings include OPENAI_API_KEY and explicitly authorized EVERMORE_BUDGET_USD / request reserves; Stripe Secret key and webhook signing secret; Prodigi key; PRINT_ASSET_SECRET; and a verified print product SKU. Use provider test/sandbox credentials for the hosted integration test. Keys belong in private hosting environment settings, never source control. Stripe webhooks use /api/payments/stripe/webhook. The pilot merchandise price is USD 149, including standard US shipping; tax is calculated separately by Stripe. Do not enable live checkout until the selected product, tax configuration, provider billing, generated print assets and physical proof have passed review.
 
 The mounted data directory is /var/data/everlore. The container entrypoint prepares that directory and drops to the node user. /healthz is liveness; /readyz requires storage, a configured operator and a non-draining server. Keep a single instance: its SQLite and worker share one disk.
+
+## Offline quality sessions
+
+The private operator Creative Lab at /#/lab compares guided-memory policies, retains source citations and resumes checkpoints. The production interview guide remains unchanged until a separately qualifying release. Synthetic findings are not evidence of family comfort or child engagement.
+
+For the foreground CLI, use a separate synthetic directory. The container prepares /var/data/everlore-quality alongside family storage on the persistent disk. Run these commands from /app as the node user:
+
+\`sh scripts/quality-loop.sh preflight --data-dir=/var/data/everlore-quality\`
+
+\`sh scripts/quality-loop.sh offline --lane=memory --iterations=1 --data-dir=/var/data/everlore-quality\`
+
+\`sh scripts/quality-loop.sh resume SESSION_ID --data-dir=/var/data/everlore-quality\`
+
+\`sh scripts/quality-loop.sh report SESSION_ID --data-dir=/var/data/everlore-quality\`
+
+Use the session ID returned by the offline command. Local development can use an empty directory such as work/quality. The helper defaults to one iteration, caps sessions at five, loads no provider credentials and performs no paid generation, Git operations or scheduled execution. Keep synthetic evidence separate from family archives; family backup commands do not include this sibling directory.
 
 ## Recovery and evidence
 

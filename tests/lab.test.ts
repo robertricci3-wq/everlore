@@ -1,3 +1,4 @@
+import { heldOutCases } from "../src/server/lab/release-cases.js";
 import { renderBookPanels } from "../src/server/layout.js";
 import sharp from "sharp";
 import { test } from "node:test";
@@ -22,7 +23,6 @@ import {
   seedLibrary,
   cases,
   artCases,
-  heldOutCases,
 } from "../src/server/lab/library.js";
 import {
   candidateProfile,
@@ -137,6 +137,25 @@ function useStudioFixture(store: Store) {
   );
 }
 class LabFake extends StudioFake {
+  // Synthetic accounting contract for control-flow tests, never a model rate.
+  withRequestGuard(guard: (bound: import("../src/server/engine/request-cost.js").RequestCostBound) => void) {
+    const reserve = (kind: "text" | "image") => guard({
+      version: 1, rateCardVersion: "synthetic-test-only", kind,
+      model: kind === "text" ? testConfig.textModel : testConfig.imageModel,
+      maxCostCents: 100, evidence: { synthetic: 1 },
+    });
+    return {
+      structured: async <T>(name: string, schema: z.ZodType<T>, instructions: string, data: unknown, images: Buffer[] = []) => {
+        reserve("text");
+        return this.structured(name, schema, instructions, data, images);
+      },
+      image: async (prompt: string, refs?: Buffer | Buffer[]) => {
+        reserve("image");
+        return this.image(prompt, refs);
+      },
+      transcribe: async () => { throw new Error("Not used by Lab tests"); },
+    };
+  }
   override async structured<T>(
     name: string,
     schema: z.ZodType<T>,
@@ -372,6 +391,10 @@ test("live story experiments use their separate allowance, retain three drafts a
       assert(studioCached(t.store, r.jobId!, "draft_3"));
     }
     assert.equal(summary(t.store, experiment(t.store, eid)).actualCents, null);
+    const calls = t.store.all<{stage: string; body: string | null}>("SELECT c.stage,b.body FROM lab_calls c LEFT JOIN lab_request_bounds b ON b.callId=c.id");
+    assert(calls.some((c) => c.stage.startsWith("pair_")));
+    assert(calls.every((c) => c.body && JSON.parse(c.body).rateCardVersion === "synthetic-test-only"));
+    assert.equal(t.store.one<{ n: number }>("SELECT COUNT(*) AS n FROM studio_calls")!.n, 0);
   } finally {
     t.close();
   }
@@ -414,12 +437,17 @@ test("budget exhaustion and ambiguous failures stop rather than replay paid requ
       });
       if (reason === "ambiguous") p.failAt = "concept_review";
       await runExperiment(t.store, eid, p, testConfig);
-      assert.equal(experiment(t.store, eid).status, "needs_attention");
+      assert.equal(experiment(t.store, eid).status, reason === "budget" ? "paused" : "needs_attention");
       const before = p.calls.length;
-      await assert.rejects(
-        () => runExperiment(t.store, eid, p, testConfig),
-        /reconciliation/,
-      );
+      if (reason === "budget") {
+        await runExperiment(t.store, eid, p, testConfig);
+        assert.equal(experiment(t.store, eid).status, "paused");
+      } else {
+        await assert.rejects(
+          () => runExperiment(t.store, eid, p, testConfig),
+          /reconciliation/,
+        );
+      }
       assert.equal(p.calls.length, before);
       const calls = t.store.all<{ status: string; estimatedCents: number }>(
         "SELECT status,estimatedCents FROM lab_calls",
@@ -728,7 +756,14 @@ test("expired Lab ownership recovers completed checkpoints but never replays an 
           "UPDATE lab_calls SET status='started' WHERE runId=?",
           run.id,
         );
+      if (!unknown) {
+        t.store.run(
+          "INSERT OR IGNORE INTO studio_steps VALUES(?, 'concept_review', 'predispatch-interruption', 'started', NULL)",
+          run.jobId!,
+        );
+      }
       recoverExpiredLab(t.store);
+      if (!unknown) assert.equal(t.store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage='concept_review' AND state='started'", run.jobId!), undefined);
       assert.equal(
         experiment(t.store, eid).status,
         unknown ? "needs_attention" : "paused",

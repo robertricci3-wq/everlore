@@ -1,3 +1,4 @@
+import { heldOutCases } from "./release-cases.js";
 import {
   newSession,
   runSession,
@@ -9,7 +10,7 @@ import { z } from "zod";
 import type { Store } from "../store.js";
 import { type EngineConfig, OpenAIProvider } from "../engine/provider.js";
 import { EngineError } from "../engine/pipeline.js";
-import { agenda, artCases, cases, heldOutCases } from "./library.js";
+import { agenda, artCases, cases } from "./library.js";
 import {
   addObservation,
   candidateProfile,
@@ -21,6 +22,17 @@ import {
   parsePlan,
 } from "./service.js";
 import { pauseExperiment, runExperiment, recoverExpiredLab } from "./runner.js";
+import {
+  experimentReport,
+  publicSessionCheckpoint,
+  sessionReport,
+} from "./report.js";
+import {
+  createMemoryExperiment,
+  listMemoryExperiments,
+  memoryExperimentView,
+  runMemoryExperiment,
+} from "./memory.js";
 export function installLabRoutes(
   app: Express,
   store: Store,
@@ -37,16 +49,59 @@ export function installLabRoutes(
       });
     next();
   };
+  const launch = (sid: string, maxCents: number) => {
+    void runSession(
+      store,
+      sid,
+      new OpenAIProvider({ ...config, budgetCents: maxCents }),
+      config,
+    ).catch(() => {
+      store.run(
+        "UPDATE lab_sessions SET status='paused',checkpoint='Session could not acquire its execution slot. Resume after the active session stops; no completed work is repeated.' WHERE id=? AND status='planned'",
+        sid,
+      );
+    });
+  };
+  app.get("/api/lab/memory", auth, operator, (req, res) => {
+    res.json({ experiments: listMemoryExperiments(store, owner(req).id) });
+  });
+  app.post("/api/lab/memory", auth, operator, (req, res) => {
+    res.status(201).json({ id: createMemoryExperiment(store, owner(req).id) });
+  });
+  app.get("/api/lab/memory/:id", auth, operator, (req, res) => {
+    res.json(memoryExperimentView(store, owner(req).id, String(req.params.id)));
+  });
+  app.post("/api/lab/memory/:id/run", auth, operator, (req, res) => {
+    const { maxPairs } = z
+      .object({ maxPairs: z.number().int().positive().max(1000).optional() })
+      .parse(req.body);
+    res.json(
+      runMemoryExperiment(store, owner(req).id, String(req.params.id), {
+        maxPairs,
+      }),
+    );
+  });
   app.get("/api/lab", auth, (req, res) =>
     res.json({
       ...labView(store, config, owner(req).id),
       agenda: labOwner(store) === owner(req).id ? agenda : [],
       sessions:
         labOwner(store) === owner(req).id
-          ? store.all(
-              "SELECT id,status,iteration,noProgress,checkpoint FROM lab_sessions WHERE ownerId=? ORDER BY rowid DESC",
-              owner(req).id,
-            )
+          ? store
+              .all<{
+                id: string;
+                status: string;
+                iteration: number;
+                noProgress: number;
+                checkpoint: string;
+              }>(
+                "SELECT id,status,iteration,noProgress,checkpoint FROM lab_sessions WHERE ownerId=? ORDER BY rowid DESC",
+                owner(req).id,
+              )
+              .map((s) => ({
+                ...s,
+                checkpoint: publicSessionCheckpoint(store, s.id, s.checkpoint),
+              }))
           : [],
     }),
   );
@@ -56,12 +111,7 @@ export function installLabRoutes(
       throw new EngineError("Connect the provider before a live session.");
     const sid = newSession(store, owner(req).id, b);
     res.status(202).json({ id: sid });
-    void runSession(
-      store,
-      sid,
-      new OpenAIProvider({ ...config, budgetCents: b.maxCents }),
-      config,
-    );
+    launch(sid, b.maxCents);
   });
   app.post("/api/lab/sessions/:id/:action", auth, operator, (req, res) => {
     const sid = String(req.params.id);
@@ -74,14 +124,21 @@ export function installLabRoutes(
     if (req.params.action === "pause") pauseSession(store, sid);
     else if (req.params.action === "resume") {
       const p = SessionPlan.parse(JSON.parse(s.plan));
-      void runSession(
-        store,
-        sid,
-        new OpenAIProvider({ ...config, budgetCents: p.maxCents }),
-        config,
-      );
+      launch(sid, p.maxCents);
     } else throw new EngineError("Unknown session action.");
     res.json({ saved: true });
+  });
+  app.get("/api/lab/sessions/:id/report", auth, operator, (req, res) => {
+    const sid = String(req.params.id);
+    if (
+      !store.one(
+        "SELECT id FROM lab_sessions WHERE id=? AND ownerId=?",
+        sid,
+        owner(req).id,
+      )
+    )
+      throw new EngineError("Session unavailable.");
+    res.json(sessionReport(store, sid));
   });
   app.post("/api/lab/experiments", auth, operator, (req, res) => {
     const b = z
@@ -178,6 +235,10 @@ export function installLabRoutes(
   );
   app.get("/api/lab/experiments/:id/evidence", auth, operator, (req, res) => {
     const e = owned(req);
+    if (parsePlan(e).evaluationPhase === "release") {
+      res.json(experimentReport(store, e.id));
+      return;
+    }
     res.json({
       experiment: e,
       comparisons: store.all(
@@ -189,6 +250,9 @@ export function installLabRoutes(
         e.id,
       ),
     });
+  });
+  app.get("/api/lab/experiments/:id/report", auth, operator, (req, res) => {
+    res.json(experimentReport(store, owned(req).id));
   });
   app.post("/api/lab/releases/:id/rollback", auth, operator, (req, res) => {
     rollback(store, String(req.params.id));

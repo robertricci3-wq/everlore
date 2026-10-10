@@ -1,3 +1,4 @@
+import { MemoryLab } from "./MemoryLab.js";
 import { ReaderExperience, VisualDirection } from "../shared/picturebook.js";
 import { useEffect, useState } from "react";
 import { ArrowRight, FlaskConical, Pause, Play, RotateCcw } from "lucide-react";
@@ -39,8 +40,8 @@ export function CreativeLab() {
     [allowance, setAllowance] = useState(""),
     [authorized, setAuthorized] = useState(false),
     [busy, setBusy] = useState(false),
-    [tab, setTab] = useState<"experiments" | "library" | "profiles">(
-      "experiments",
+    [tab, setTab] = useState<"memory" | "experiments" | "library" | "profiles">(
+      "memory",
     );
   const load = async () => {
     const v = await api<View>("/lab");
@@ -128,21 +129,27 @@ export function CreativeLab() {
             </span>
           </div>
           <nav className="lab-tabs" aria-label="Lab sections">
-            {(["experiments", "library", "profiles"] as const).map((t) => (
-              <button
-                key={t}
-                className={tab === t ? "active" : ""}
-                onClick={() => setTab(t)}
-              >
-                {t === "experiments"
-                  ? "Experiments"
-                  : t === "library"
-                    ? "Craft library"
-                    : "Engine versions"}
-              </button>
-            ))}
+            {(["memory", "experiments", "library", "profiles"] as const).map(
+              (t) => (
+                <button
+                  key={t}
+                  className={tab === t ? "active" : ""}
+                  onClick={() => setTab(t)}
+                >
+                  {t === "memory"
+                    ? "Guided memory"
+                    : t === "experiments"
+                      ? "Experiments"
+                      : t === "library"
+                        ? "Craft library"
+                        : "Engine versions"}
+                </button>
+              ),
+            )}
           </nav>
-          {tab === "library" ? (
+          {tab === "memory" ? (
+            <MemoryLab />
+          ) : tab === "library" ? (
             <section>
               <p className="muted">
                 Critical methods from literature, oral language and
@@ -620,12 +627,20 @@ function ExperimentPanel({
             target="_blank"
             rel="noreferrer"
           >
-            Full evidence ↗
+            {e.evaluationPhase === "release"
+              ? "Aggregate release evidence ↗"
+              : "Full evidence ↗"}
           </a>
         </div>
         {e.error && (
           <p role="alert" className="alert">
             {e.error}
+          </p>
+        )}
+        {e.evaluationPhase === "release" && (
+          <p className="lab-note">
+            Held-out evaluation: individual inputs, outputs and critiques remain
+            outside development views.
           </p>
         )}
         <div className="lab-metrics">
@@ -648,6 +663,13 @@ function ExperimentPanel({
             <b>{e.summary.repairs}</b>repairs
           </span>
         </div>
+        <a
+          href={`/api/lab/experiments/${e.id}/report`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Score distribution and review packet ↗
+        </a>
         <p className="muted">
           Reserved estimates: {money(e.reservedCents)} / {money(e.maxCents)} ·
           Actual billing: {money(e.summary.actualCents)} · Engineering:{" "}

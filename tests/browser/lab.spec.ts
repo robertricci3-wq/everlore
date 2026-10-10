@@ -35,6 +35,7 @@ test("Creative Lab: offline comparison, optional feedback and no approval or rel
       name: "Find the extraordinary in the ordinary.",
     }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Experiments", exact: true }).click();
   await page.getByLabel("Evaluation purpose").selectOption("release");
   await expect(
     page.getByText("Matched development comparison of this candidate", {
@@ -77,4 +78,76 @@ test("Creative Lab: offline comparison, optional feedback and no approval or rel
       "No candidate has been promoted. Offline examples cannot activate an engine release.",
     ),
   ).toBeVisible();
+});
+
+test("memory comparison retains a checkpoint, citations and complete reproducible evidence", async ({
+  page,
+  request,
+}) => {
+  const name = `memory-lab-browser-${Date.now()}`,
+    password = "Synthetic browser test password";
+  expect(
+    (
+      await request.post("/api/register", {
+        headers: { "X-Evermore-Client": "1" },
+        data: { name, password, adult: true },
+      })
+    ).ok(),
+  ).toBeTruthy();
+  const store = new Store("work/e2e-data");
+  const owner = store.one<{ id: string }>(
+    "SELECT id FROM users WHERE name=?",
+    name,
+  )!;
+  setLabOwner(store, owner.id);
+  store.close();
+  await page.goto("/#/login");
+  await page.getByLabel("Shelf name").fill(name);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Open your shelf" }).click();
+  await expect(page).toHaveURL(/#\/shelf$/);
+  await page.goto("/#/lab");
+  const memory = page.getByRole("region", {
+    name: "Guided memory experiments",
+  });
+  await memory
+    .getByRole("button", { name: "Freeze memory comparison" })
+    .click();
+  await memory
+    .getByRole("button", { name: "Run one pair and checkpoint" })
+    .click();
+  await expect(
+    memory.getByRole("heading", { name: "Saved checkpoint" }),
+  ).toBeVisible();
+  await expect(
+    memory.getByText("2/72 decisions retained", { exact: false }),
+  ).toBeVisible();
+  await page.reload();
+  await memory
+    .getByRole("button", { name: "Resume memory comparison" })
+    .click();
+  await expect(
+    memory.getByText("72/72 decisions retained", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    memory.getByText("12 pairs with fewer prompts", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    memory.getByText("0 failed runs", { exact: false }),
+  ).toBeVisible();
+  const citations = memory
+    .locator(".lab-artifact")
+    .filter({ has: page.getByRole("heading", { name: "Candidate guide" }) });
+  await expect(
+    citations.getByText("Source citations", { exact: true }),
+  ).toBeVisible();
+  expect(await citations.locator("blockquote").count()).toBeGreaterThan(0);
+  await page.screenshot({
+    path: "work/evidence/quality-memory-comparison.png",
+    fullPage: true,
+  });
+  const response = await page.request.get("/api/lab/memory");
+  const data = await response.json();
+  expect(data.experiments[0].summary.providerCalls).toBe(0);
+  expect(data.experiments[0].summary.promotionEligible).toBe(false);
 });

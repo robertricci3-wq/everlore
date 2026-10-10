@@ -911,7 +911,7 @@ export async function runStudio(
         );
     }
     const estimate =
-      kind === "local"
+      kind === "local" || request.lab
         ? 0
         : kind === "image"
           ? config.imageReserve
@@ -1017,7 +1017,9 @@ export async function runStudio(
           inputHash,
         );
         store.run("UPDATE studio_jobs SET stage=? WHERE id=?", name, job.id);
-        if (kind !== "local") {
+        // Lab owns the authoritative request-bound ledger. Do not reserve a
+        // second flat estimate or create an ambiguous-looking studio attempt.
+        if (kind !== "local" && !request.lab) {
           store.run(
             "INSERT INTO studio_calls VALUES(?,?,?,?,?,?,'started',NULL,NULL,NULL,?,NULL,?)",
             callId,
@@ -1042,7 +1044,7 @@ export async function runStudio(
             );
         }
       });
-      if (kind !== "local") dispatched = true;
+      if (kind !== "local" && !request.lab) dispatched = true;
     };
     try {
       checkContinue();
@@ -1081,6 +1083,8 @@ export async function runStudio(
           error instanceof StudioPreDispatchPause
             ? error
             : new StudioPreDispatchPause(error.message);
+        if (request.lab && kind !== "local")
+          store.run("DELETE FROM studio_steps WHERE jobId=? AND stage=? AND state='started'", job.id, name);
         // Nested local orchestration must not replace the actual blocked stage.
         if (!stopped.checkpointRecorded) {
           recordStudioCheckpoint(store, job.id, name, inputHash, stopped);
@@ -2450,7 +2454,9 @@ export async function runStudio(
   } catch (error) {
     if (owns())
       pause(
-        error instanceof LabPaused ? "lab_paused" : "needs_attention",
+        error instanceof LabPaused ||
+          (request.lab && error instanceof StudioPreDispatchPause)
+          ? "lab_paused" : "needs_attention",
         error instanceof EngineError ||
           error instanceof StudioPreDispatchPause ||
           error instanceof ProviderRequestError ||

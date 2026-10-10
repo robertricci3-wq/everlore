@@ -392,6 +392,14 @@ export function createApp(
     );
     res.status(201).json({ id: projectId });
   });
+  // Release artifacts stay in evaluation storage, including when their IDs
+  // are known from old logs. Generic readers, exports and recovery endpoints
+  // must not bypass aggregate-only held-out reports.
+  app.use(["/api/projects/:id", "/api/operator/projects/:id"], auth, (req, _res, next) => {
+    if (store.one("SELECT r.id FROM lab_runs r JOIN lab_experiments e ON e.id=r.experimentId WHERE r.projectId=? AND json_extract(e.plan,'$.evaluationPhase')='release'", String(req.params.id)))
+      throw new HttpError(404, "This project is unavailable.");
+    next();
+  });
   installLabRoutes(app, store, config, auth, owner);
   installAlmanacRoutes(app, store, { auth, owner, config });
   installOperatorCostRoutes(app, store, operatorGuard);

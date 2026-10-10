@@ -108,6 +108,7 @@ export interface LabRunView {
   }>;
 }
 export interface LabExperimentView {
+  evaluationPhase: "development" | "release";
   id: string;
   title: string;
   hypothesis: string;

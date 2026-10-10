@@ -30,7 +30,8 @@ import {
   labView,
 } from "../src/server/lab/service.js";
 import { activeProfile, verifyProfile } from "../src/server/lab/profiles.js";
-import { heldOutCases, cases } from "../src/server/lab/library.js";
+import { heldOutCases } from "../src/server/lab/release-cases.js";
+import { cases } from "../src/server/lab/library.js";
 const reader = ReaderExperience.parse({
   version: 1,
   dramaticPossibilities: [

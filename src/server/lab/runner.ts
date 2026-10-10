@@ -11,6 +11,8 @@ import {
   type StoryVerdict,
 } from "../../shared/studio.js";
 import { EngineError } from "../engine/pipeline.js";
+import type { RequestCostBound } from "../engine/request-cost.js";
+import { LabRequestPause, ensureLabRequestRecords, recordLabRequestCheckpoint, validateLabRequestBound } from "./request-budget.js";
 import {
   type Provider,
   type EngineConfig,
@@ -35,7 +37,7 @@ import {
   type FrozenPlan,
 } from "./service.js";
 
-class Halt extends EngineError {}
+class Halt extends LabRequestPause {}
 class Stale extends EngineError {}
 const goodImage = (r: z.infer<typeof ImageReview>) =>
   !r.defects.length &&
@@ -73,13 +75,10 @@ export async function runExperiment(
       );
     if (
       p.mode === "live" &&
-      (!config.enabled ||
-        !config.apiKey ||
-        config.textReserve <= 0 ||
-        config.imageReserve <= 0)
+      (!config.enabled || !config.apiKey)
     )
       throw new EngineError(
-        "Connect the provider and configure positive request reserves before a live experiment.",
+        "Connect the provider before a live experiment. Each request requires a verified conservative bound within its separate Lab allowance.",
       );
     store.run(
       "UPDATE lab_experiments SET status='running',error=NULL WHERE id=?",
@@ -159,13 +158,13 @@ export async function runExperiment(
     if (e.status === "running")
       store.run(
         "UPDATE lab_experiments SET status=?,error=? WHERE id=?",
-        error instanceof Halt ? "paused" : "needs_attention",
+        error instanceof LabRequestPause ? "paused" : "needs_attention",
         error instanceof EngineError
           ? error.message
           : "Experiment stopped at its saved checkpoint. Unknown paid outcomes require reconciliation.",
         eid,
       );
-    else if (!(error instanceof Halt && e.status === "paused")) throw error;
+    else if (!(error instanceof LabRequestPause && e.status === "paused")) throw error;
   } finally {
     active.delete(eid);
   }
@@ -178,6 +177,7 @@ function scope(
   provider: Provider,
   c: EngineConfig,
 ) {
+  ensureLabRequestRecords(store);
   store.run(
     "CREATE TABLE IF NOT EXISTS lab_image_renders(callId TEXT PRIMARY KEY,body TEXT NOT NULL)",
   );
@@ -198,6 +198,12 @@ function scope(
   const continuing = () =>
     experiment(store, e.id).status === "running" && owns();
   let lastReceipt: ProviderReceipt | null = null;
+  let reserveActiveRequest: ((bound: RequestCostBound) => void) | undefined;
+  const guardedProvider = provider.withRequestGuard?.((bound) => {
+    if (!reserveActiveRequest)
+      throw new LabRequestPause("A Lab request has no active durable stage. No request was sent.");
+    reserveActiveRequest(bound);
+  });
   const paid = async <T>(
     name: string,
     input: unknown,
@@ -223,77 +229,89 @@ function scope(
     }
     if (!continuing())
       throw new Halt("Experiment paused at a saved checkpoint.");
-    const reserve =
-        kind === "local"
-          ? 0
-          : kind === "image"
-            ? c.imageReserve
-            : c.textReserve,
-      call = id();
-    store.transaction(() => {
-      const used = store.one<{ total: number }>(
-        "SELECT COALESCE(SUM(estimatedCents),0) AS total FROM lab_calls WHERE runId IN(SELECT id FROM lab_runs WHERE experimentId=?)",
-        e.id,
-      )!.total;
-      if (used + reserve > e.maxCents)
-        throw new EngineError(
-          "The experiment allowance is exhausted. No further paid request was sent.",
+    const checkpoint = store.one<{ inputHash: string }>(
+      "SELECT inputHash FROM lab_request_checkpoints WHERE runId=? AND stage=? AND resumedAt IS NULL",
+      r.id, name,
+    );
+    if (checkpoint && checkpoint.inputHash !== digest)
+      throw new EngineError("A checkpoint input changed; start a new experiment.");
+    const call = id(), started = Date.now();
+    let dispatched = false, status = "ambiguous_failure";
+    const previousGuard = reserveActiveRequest;
+    const reserve = (bound: RequestCostBound) => {
+      if (dispatched)
+        throw new EngineError("A Lab stage attempted more than one paid request. Reconcile the saved attempt.");
+      if (kind === "local")
+        throw new LabRequestPause("A local Lab stage cannot dispatch a paid request.");
+      validateLabRequestBound(bound, kind, kind === "image" ? c.imageModel : c.textModel);
+      store.transaction(() => {
+        if (!continuing()) throw new Halt("Experiment paused at a saved checkpoint.", "pause");
+        const used = store.one<{ total: number }>(
+          "SELECT COALESCE(SUM(estimatedCents),0) AS total FROM lab_calls WHERE runId IN(SELECT id FROM lab_runs WHERE experimentId=?)",
+          e.id,
+        )!.total;
+        if (used + bound.maxCostCents > e.maxCents)
+          throw new LabRequestPause(
+            "The experiment allowance cannot cover the next request's conservative cost bound. No request was sent; completed work is saved.",
+            "budget", bound.maxCostCents,
+          );
+        // Recheck inside the write transaction so competing scopes cannot both dispatch.
+        if (store.one("SELECT stage FROM lab_steps WHERE runId=? AND stage=?", r.id, name))
+          throw new EngineError("A Lab request already owns this checkpoint. It will not be repeated.");
+        store.run("INSERT INTO lab_steps VALUES(?,?,?,'started',NULL)", r.id, name, digest);
+        store.run(
+          "UPDATE lab_runs SET stage=?,leaseUntil=? WHERE id=? AND leaseToken=?",
+          name, Date.now() + 240000, r.id, token,
         );
-      store.run(
-        "INSERT OR IGNORE INTO lab_steps VALUES(?,?,?,'started',NULL)",
-        r.id,
-        name,
-        digest,
-      );
-      store.run(
-        "UPDATE lab_runs SET stage=?,leaseUntil=? WHERE id=? AND leaseToken=?",
-        name,
-        Date.now() + 240000,
-        r.id,
-        token,
-      );
-      if (kind !== "local")
         store.run(
           "INSERT INTO lab_calls VALUES(?,?,?,?,?,'started',?,NULL,NULL,NULL,?,NULL,?)",
-          call,
-          r.id,
-          name,
-          kind,
-          kind === "image" ? c.imageModel : c.textModel,
-          digest,
-          reserve,
-          now(),
+          call, r.id, name, kind, bound.model, digest, bound.maxCostCents, now(),
         );
-    });
-    const started = Date.now();
-    let status = "ambiguous_failure";
+        store.run("INSERT INTO lab_request_bounds VALUES(?,?)", call, JSON.stringify(bound));
+        store.run("UPDATE lab_request_checkpoints SET resumedAt=? WHERE runId=? AND stage=? AND inputHash=?", now(), r.id, name, digest);
+      });
+      dispatched = true;
+    };
     try {
+      if (kind === "local") {
+        // A local orchestration step may contain separately guarded paid children.
+        store.run("INSERT OR IGNORE INTO lab_steps VALUES(?,?,?,'started',NULL)", r.id, name, digest);
+      } else {
+        if (!guardedProvider)
+          throw new LabRequestPause("This provider cannot verify conservative Lab request costs. No request was sent.");
+        reserveActiveRequest = reserve;
+      }
       const result = await fn();
       if (!owns()) throw new Stale("Stale experiment output was rejected.");
+      if (kind !== "local" && !dispatched)
+        throw new LabRequestPause("The provider returned without a verified Lab reservation. Its output was not accepted.");
       store.run(
         "UPDATE lab_steps SET state='completed',result=? WHERE runId=? AND stage=?",
-        JSON.stringify(result),
-        r.id,
-        name,
+        JSON.stringify(result), r.id, name,
       );
       status = "completed";
       return result;
+    } catch (error) {
+      if (!dispatched && error instanceof Error && "preDispatch" in error && error.preDispatch === true) {
+        const stopped = error instanceof LabRequestPause ? error : new LabRequestPause(error.message);
+        if (kind !== "local") recordLabRequestCheckpoint(store, r.id, name, digest, stopped);
+        throw stopped;
+      }
+      throw error;
     } finally {
-      lastReceipt = provider.takeReceipt?.() ?? null;
-      if (lastReceipt?.imageRender)
+      reserveActiveRequest = previousGuard;
+      if (dispatched) {
+        lastReceipt = guardedProvider?.takeReceipt?.() ?? null;
+        if (lastReceipt?.imageRender)
+          store.run("INSERT OR IGNORE INTO lab_image_renders VALUES(?,?)", call, JSON.stringify(lastReceipt.imageRender));
+        if (lastReceipt?.meteredCost)
+          store.run("INSERT OR IGNORE INTO lab_metered_costs VALUES(?,?)", call, JSON.stringify(lastReceipt.meteredCost));
         store.run(
-          "INSERT OR IGNORE INTO lab_image_renders VALUES(?,?)",
-          call,
-          JSON.stringify(lastReceipt.imageRender),
+          "UPDATE lab_calls SET status=?,latencyMs=?,requestId=?,usage=? WHERE id=?",
+          status, Date.now() - started, lastReceipt?.requestId ?? null,
+          lastReceipt?.usage ? JSON.stringify(lastReceipt.usage) : null, call,
         );
-      store.run(
-        "UPDATE lab_calls SET status=?,latencyMs=?,requestId=?,usage=? WHERE id=?",
-        status,
-        Date.now() - started,
-        lastReceipt?.requestId ?? null,
-        lastReceipt?.usage ? JSON.stringify(lastReceipt.usage) : null,
-        call,
-      );
+      }
     }
   };
   const wrapped: Provider = {
@@ -306,7 +324,7 @@ function scope(
         name,
         { instructions, data, images: images.map((b) => hash(b)) },
         "text",
-        () => provider.structured(name, schema, instructions, data, images),
+        () => guardedProvider!.structured(name, schema, instructions, data, images),
       ),
     image: async (prompt, refs) => {
       const stage = r.jobId
@@ -325,7 +343,7 @@ function scope(
         },
         "image",
         async () => {
-          const bytes = await provider.image(prompt, refs);
+          const bytes = await guardedProvider!.image(prompt, refs);
           return store.putAsset(r.projectId!, bytes, "art");
         },
       );
@@ -334,6 +352,7 @@ function scope(
   };
   return {
     paid,
+    provider: guardedProvider ?? provider,
     owns,
     wrapped,
     continuing,
@@ -371,6 +390,7 @@ async function runCase(
       profile.imageRender ?? legacyImageRender(profile.models.image),
     ) ?? provider;
   const ctx = scope(store, e, r, provider, c);
+  provider = ctx.provider;
   try {
     if (p.mode === "offline") {
       const source = p.cases.find((c) => c.id === r.caseId) ?? p.cases[0];
@@ -473,7 +493,7 @@ async function runCase(
       r.jobId,
     )!;
     if (job.status === "lab_paused")
-      throw new Halt("Experiment paused at a saved checkpoint.");
+      throw new Halt(job.error ?? "Experiment paused at a saved checkpoint.");
     const accepted = studioCached<{
       manuscript: Snapshot["manuscript"];
       heartReview: Snapshot["heartReview"];
@@ -521,7 +541,7 @@ async function runCase(
       throw new Stale("A newer worker owns this experiment result.");
     store.run(
       "UPDATE lab_runs SET status=?,error=? WHERE id=?",
-      error instanceof Halt ? "paused" : "needs_attention",
+      error instanceof LabRequestPause ? "paused" : "needs_attention",
       error instanceof EngineError
         ? error.message
         : "Paid outcome may be unknown; no automatic retry.",
@@ -772,6 +792,7 @@ async function comparePair(
       imageModel: base.models.image,
     };
     const ctx = scope(store, e, a, provider, c);
+    provider = ctx.provider;
     try {
       const reviews: z.infer<typeof PairReview>[] = [],
         winners: Comparison["winner"][] = [];
@@ -917,13 +938,15 @@ export function recoverExpiredLab(store: Store, at = Date.now()) {
               s.stage,
             );
           else if (
-            store.one(
-              "SELECT id FROM studio_calls WHERE jobId=? AND stage=?",
-              run.jobId,
+            !store.one(
+              "SELECT id FROM lab_calls WHERE runId=? AND stage=?",
+              run.id,
               s.stage,
             )
           ) {
-            // No corresponding Lab dispatch exists: reservation happened, but no request was sent.
+            // A new Lab job has no duplicate studio reservation. A started
+            // orchestration step without any Lab attempt is safe to resume.
+            // The global unknown-attempt check above protects nested calls.
             store.run(
               "DELETE FROM studio_steps WHERE jobId=? AND stage=?",
               run.jobId,

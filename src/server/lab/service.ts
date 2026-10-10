@@ -1,3 +1,4 @@
+import { heldOutCases, seedReleaseCases } from "./release-cases.js";
 import { z } from "zod";
 import { randomInt } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -6,7 +7,7 @@ import { Store, canonical, hash, id, now } from "../store.js";
 import { EngineError } from "../engine/pipeline.js";
 import type { EngineConfig } from "../engine/provider.js";
 import { activeProfile, loadProfile, saveProfile } from "./profiles.js";
-import { agenda, artCases, heldOutCases, seedLibrary } from "./library.js";
+import { agenda, artCases, seedLibrary } from "./library.js";
 import {
   CraftPrinciple,
   ExperimentPlan,
@@ -204,6 +205,7 @@ export function createExperiment(
   ownerId: string,
   input: unknown,
   c: EngineConfig,
+  requestedId?: string,
 ) {
   seedLibrary(store);
   const body = z
@@ -216,6 +218,24 @@ export function createExperiment(
     plan = body.plan,
     base = activeProfile(store, c),
     candidate = loadProfile(store, plan.candidateHash);
+  if (requestedId) {
+    const existing = store.one<ExperimentRow>(
+      "SELECT * FROM lab_experiments WHERE id=?",
+      requestedId,
+    );
+    if (existing) {
+      const prior = parsePlan(existing);
+      if (
+        existing.ownerId !== ownerId ||
+        canonical(ExperimentPlan.parse(prior)) !== canonical(plan) ||
+        existing.maxCents !== (plan.mode === "live" ? body.maxCents : 0)
+      )
+        throw new EngineError(
+          "This experiment identity already has different frozen inputs.",
+        );
+      return existing.id;
+    }
+  }
   if (candidate.parentHash !== base.hash)
     throw new EngineError(
       "Compare a candidate derived from the current active profile.",
@@ -233,6 +253,14 @@ export function createExperiment(
     throw new EngineError(
       "A live experiment needs its own explicit allowance.",
     );
+  if (
+    plan.evaluationPhase !== "release" &&
+    plan.caseIds.some((cid) => heldOutCases.some((c) => c.id === cid))
+  )
+    throw new EngineError(
+      "Keep development and held-out release cases separate.",
+    );
+  if (plan.evaluationPhase === "release") seedReleaseCases(store);
   const suite =
     plan.lane === "art"
       ? artCases
@@ -336,7 +364,7 @@ export function createExperiment(
       rubricHash: hash(canonical(acceptance)),
       codeHash: codeHash(),
     },
-    experimentId = id();
+    experimentId = requestedId ?? id();
   store.transaction(() => {
     store.run(
       "INSERT INTO lab_experiments(id,ownerId,plan,planHash,status,maxCents,authorization,createdAt) VALUES(?,?,?,?,?,?,?,?)",
@@ -630,66 +658,103 @@ export function labView(
           s = summary(store, e);
         return {
           id: e.id,
-          ...p,
+          title: p.title,
+          hypothesis: p.hypothesis,
+          risk: p.risk,
+          lane: p.lane,
+          mode: p.mode,
+          criterion: p.criterion,
+          evaluationPhase: p.evaluationPhase,
+          baselineHash: p.baselineHash,
+          candidateHash: p.candidateHash,
+          replicates: p.replicates,
+          caseIds: p.evaluationPhase === "release" ? [] : p.caseIds,
           planHash: e.planHash,
           status: e.status,
           maxCents: e.maxCents,
           reservedCents: s.reservedCents,
           engineering: engineeringPassed(store, p) ? "passed" : "unverified",
           createdAt: e.createdAt,
-          error: e.error,
-          canon: e.canon ? JSON.parse(e.canon) : null,
-          runs: store
-            .all<RunRow>(
-              "SELECT * FROM lab_runs WHERE experimentId=? ORDER BY caseId,replicate,side",
-              e.id,
-            )
-            .map((r) => ({
-              id: r.id,
-              pairKey: `${r.caseId}:${r.replicate}`,
-              side: r.side,
-              caseTitle:
-                artCases.find((c) => c.id === r.caseId)?.title ??
-                p.cases.find((c) => c.id === r.caseId)?.title ??
-                r.caseId,
-              replicate: r.replicate,
-              status: r.status,
-              stage: r.stage,
-              error: r.error,
-              projectId: r.projectId,
-              jobId: r.jobId,
-              output: r.output ? JSON.parse(r.output) : null,
-              attempts: store
-                .all<{ stage: string; state: string; result: string | null }>(
-                  "SELECT stage,state,result FROM lab_steps WHERE runId=?",
-                  r.id,
-                )
-                .map((a) => ({
-                  stage: a.stage,
-                  status: a.state,
-                  result: a.result ? JSON.parse(a.result) : null,
-                })),
-              calls: store.all(
-                "SELECT stage,status,latencyMs,estimatedCents,actualCents,usage FROM lab_calls WHERE runId=?",
-                r.id,
-              ),
-            })),
-          observations: store
-            .all<{ id: string; body: string; createdAt: string }>(
-              "SELECT * FROM lab_observations WHERE experimentId=?",
-              e.id,
-            )
-            .map((o) => ({
-              ...ObservationInput.parse(JSON.parse(o.body)),
-              id: o.id,
-              createdAt: o.createdAt,
-            })),
-          summary: s,
+          error:
+            p.evaluationPhase === "release" && e.error
+              ? "Release evaluation stopped; individual evidence is retained privately."
+              : e.error,
+          canon:
+            p.evaluationPhase === "release"
+              ? null
+              : e.canon
+                ? JSON.parse(e.canon)
+                : null,
+          runs:
+            p.evaluationPhase === "release"
+              ? []
+              : store
+                  .all<RunRow>(
+                    "SELECT * FROM lab_runs WHERE experimentId=? ORDER BY caseId,replicate,side",
+                    e.id,
+                  )
+                  .map((r) => ({
+                    id: r.id,
+                    pairKey: `${r.caseId}:${r.replicate}`,
+                    side: r.side,
+                    caseTitle:
+                      artCases.find((c) => c.id === r.caseId)?.title ??
+                      p.cases.find((c) => c.id === r.caseId)?.title ??
+                      r.caseId,
+                    replicate: r.replicate,
+                    status: r.status,
+                    stage: r.stage,
+                    error: r.error,
+                    projectId: r.projectId,
+                    jobId: r.jobId,
+                    output: r.output ? JSON.parse(r.output) : null,
+                    attempts: store
+                      .all<{
+                        stage: string;
+                        state: string;
+                        result: string | null;
+                      }>(
+                        "SELECT stage,state,result FROM lab_steps WHERE runId=?",
+                        r.id,
+                      )
+                      .map((a) => ({
+                        stage: a.stage,
+                        status: a.state,
+                        result: a.result ? JSON.parse(a.result) : null,
+                      })),
+                    calls: store.all(
+                      "SELECT stage,status,latencyMs,estimatedCents,actualCents,usage FROM lab_calls WHERE runId=?",
+                      r.id,
+                    ),
+                  })),
+          observations:
+            p.evaluationPhase === "release"
+              ? []
+              : store
+                  .all<{ id: string; body: string; createdAt: string }>(
+                    "SELECT * FROM lab_observations WHERE experimentId=?",
+                    e.id,
+                  )
+                  .map((o) => ({
+                    ...ObservationInput.parse(JSON.parse(o.body)),
+                    id: o.id,
+                    createdAt: o.createdAt,
+                  })),
+          summary:
+            p.evaluationPhase === "release" ? { ...s, worstCases: [] } : s,
         } as LabExperimentView;
       }),
-    releases: store.all(
-      "SELECT id,action,profileHash,previousHash,notes,createdAt FROM lab_releases ORDER BY rowid DESC",
-    ),
+    releases: store
+      .all<LabView["releases"][number]>(
+        "SELECT id,action,profileHash,previousHash,notes,createdAt FROM lab_releases ORDER BY rowid DESC",
+      )
+      .map((r) => ({
+        ...r,
+        notes:
+          r.action === "rollback"
+            ? "Operator rollback; saved editions remain unchanged."
+            : "Automated release; consult aggregate evaluation evidence.",
+      })),
     providerConfigured: c.enabled && !!c.apiKey,
     reserves: { text: c.textReserve, image: c.imageReserve },
     message:

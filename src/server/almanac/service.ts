@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  DEFAULT_MEMORY_GUIDE,
+  LEGACY_MEMORY_GUIDE,
+  MemoryGuideProfile,
+} from "../../shared/memoryGuide.js";
 import { Book, Transcript } from "../../shared/contracts.js";
 import {
   InterviewTurn,
@@ -46,6 +51,7 @@ export interface SessionRow {
   createdAt: string;
   updatedAt: string;
   purpose: "memory" | "page_title";
+  guideProfile: string | null;
 }
 const keySchema = z.string().trim().min(1).max(100);
 function privateOwner(s: Store, ownerId: string) {
@@ -120,6 +126,9 @@ export function readSession(s: Store, row: SessionRow): InterviewSessionRecord {
     pageId: row.pageId,
     invitationId: row.invitationId,
     invitationVersion: row.invitationVersion,
+    guideProfile: row.guideProfile
+      ? MemoryGuideProfile.parse(JSON.parse(row.guideProfile))
+      : LEGACY_MEMORY_GUIDE,
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -411,6 +420,7 @@ function sessionPrompt(
       JSON.parse(row.invitation),
       buildMemoryBrief(session),
       session.turns,
+      session.guideProfile ?? LEGACY_MEMORY_GUIDE,
     );
   const pending = session.turns.some(
     (turn) => !["complete", "skipped"].includes(turn.status),
@@ -617,7 +627,7 @@ export function startSession(
       at,
     );
     s.run(
-      "INSERT INTO almanac_sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO almanac_sessions(id,ownerId,projectId,pageId,invitationId,invitationVersion,invitation,status,requestKey,consentAt,aiConsentAt,createdAt,updatedAt,purpose,guideProfile) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       sid,
       ownerId,
       pid,
@@ -632,6 +642,7 @@ export function startSession(
       at,
       at,
       purpose,
+      canonical(DEFAULT_MEMORY_GUIDE),
     );
     return sid;
   });

@@ -16,6 +16,22 @@ Private runtime settings include OPENAI_API_KEY and explicitly authorized EVERMO
 
 The mounted data directory is /var/data/everlore. The container entrypoint prepares that directory and drops to the node user. /healthz is liveness; /readyz requires storage, a configured operator and a non-draining server. Keep a single instance: its SQLite and worker share one disk.
 
+## Offline quality sessions
+
+The private operator Creative Lab at /#/lab compares guided-memory policies, retains source citations and resumes checkpoints. The production interview guide remains unchanged until a separately qualifying release. Synthetic findings are not evidence of family comfort or child engagement.
+
+For the foreground CLI, use a separate synthetic directory. The container prepares /var/data/everlore-quality alongside family storage on the persistent disk. Run these commands from /app as the node user:
+
+`sh scripts/quality-loop.sh preflight --data-dir=/var/data/everlore-quality`
+
+`sh scripts/quality-loop.sh offline --lane=memory --iterations=1 --data-dir=/var/data/everlore-quality`
+
+`sh scripts/quality-loop.sh resume SESSION_ID --data-dir=/var/data/everlore-quality`
+
+`sh scripts/quality-loop.sh report SESSION_ID --data-dir=/var/data/everlore-quality`
+
+Use the session ID returned by the offline command. Local development can use an empty directory such as work/quality. The helper defaults to one iteration, caps sessions at five, loads no provider credentials and performs no paid generation, Git operations or scheduled execution. Keep synthetic evidence separate from family archives; family backup commands do not include this sibling directory.
+
 ## Recovery and evidence
 
 Run `node --import tsx scripts/backup.ts create DATA_DIR NEW_BACKUP_DIR` to create a full private backup; verify it and test restoration into a new empty directory with the same command's verify/restore actions. Backups include secrets and family records: store them privately with encryption and restricted access. Restored services have a persistent recovery lock. Keep DISABLE_WORKER=1 while reconciling paid outcomes, then record evidence with the operator release-recovery command before enabling workers. Never run two services against copied active order state.
