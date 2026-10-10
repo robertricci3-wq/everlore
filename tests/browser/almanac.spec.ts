@@ -174,26 +174,60 @@ test("voice almanac: interrupted upload resumes same answer and never loses an e
   ).toBeVisible();
 });
 
-test("a spoken-page naming session is recoverable and has a typed fallback", async ({ page }) => {
+test("a spoken-page naming session is recoverable and has a typed fallback", async ({
+  page,
+}) => {
   await family(page);
-  await page.getByRole("button", { name: "A page of my own", exact: true }).click();
+  await page
+    .getByRole("button", { name: "A page of my own", exact: true })
+    .click();
   await page.getByRole("button", { name: "Name it by voice" }).click();
   await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Let’s begin", exact: true }).click();
+  await expect(page).toHaveURL(/#\/interview\/[^/]+$/);
+  await expect(
+    page.getByRole("button", { name: "Answer in your own time", exact: true }),
+  ).toBeVisible();
   const sessionUrl = page.url();
   await page.goto("/#/shelf");
-  await page.getByRole("link", { name: /Name your page Return to your saved page name/ }).click();
+  await page
+    .getByRole("link", {
+      name: /Name your page Return to your saved page name/,
+    })
+    .click();
   await expect(page).toHaveURL(sessionUrl);
   await page.getByRole("button", { name: "Answer in your own time" }).click();
-  await page.getByText("Prefer to add the words yourself?", { exact: true }).click();
-  await page.getByLabel("Your words", { exact: true }).fill("The boat we made together");
-  await page.getByRole("button", { name: "Save these words", exact: true }).click();
-  await page.getByRole("button", { name: "Save page name", exact: true }).click();
-  await expect(page.getByRole("heading", {name:"The boat we made together", exact:true})).toBeVisible();
+  await page
+    .getByText("Prefer to add the words yourself?", { exact: true })
+    .click();
+  await page
+    .getByLabel("Your words", { exact: true })
+    .fill("The boat we made together");
+  await page
+    .getByRole("button", { name: "Save these words", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Save page name", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "The boat we made together",
+      exact: true,
+    }),
+  ).toBeVisible();
   await page.goto(sessionUrl);
-  await expect(page.getByText("Your page name is saved.", {exact:false})).toBeVisible();
-  await expect(page.getByRole("button", {name:"Make my story", exact:true})).toHaveCount(0);
-  await expect(page.getByRole("button", {name:"Add something to this memory", exact:true})).toHaveCount(0);
+  await expect(
+    page.getByText("Your page name is saved.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Make my story", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", {
+      name: "Add something to this memory",
+      exact: true,
+    }),
+  ).toHaveCount(0);
   const view = await (await page.request.get("/api/almanac")).json();
   expect(view.titleDrafts).toHaveLength(0);
   expect(view.books).toHaveLength(0);
