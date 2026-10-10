@@ -1,3 +1,4 @@
+import { worldProblems } from "./scene-validation.js";
 import { isRecoveryLocked } from "../recovery-lock.js";
 import {
   AccessError,
@@ -928,38 +929,6 @@ export function studioView(store: Store, projectId: string): StudioView | null {
     kind: job.kind,
     recovery: studioRecovery(store, job.id),
   };
-}
-function worldProblems(
-  world: Snapshot["world"],
-  manuscript: Snapshot["manuscript"],
-  scenes: Snapshot["scenes"],
-) {
-  const people = new Set(world.characters.map((c) => c.id)),
-    objects = new Set(world.objects.map((o) => o.id)),
-    issues: string[] = [];
-  if (
-    people.size !== world.characters.length ||
-    objects.size !== world.objects.length
-  )
-    issues.push("Duplicate cast or object IDs.");
-  for (const [i, s] of scenes.scenes.entries()) {
-    if (
-      s.spread !== i + 1 ||
-      s.characterIds.some((c) => !people.has(c)) ||
-      s.objectIds.some((o) => !objects.has(o)) ||
-      canonical([...s.characterIds].sort()) !==
-        canonical([...manuscript.spreads[i].characterIds].sort())
-    )
-      issues.push(`Scene ${i + 1} has inconsistent cast or object references.`);
-    if (
-      s.quietRegion[0] + s.quietRegion[2] > 1 ||
-      s.quietRegion[1] + s.quietRegion[3] > 1
-    )
-      issues.push(`Scene ${i + 1} has invalid composition bounds.`);
-  }
-  if (new Set(scenes.scenes.map((s) => s.composition)).size < 3)
-    issues.push("The scene sequence needs more composition variety.");
-  return issues;
 }
 export async function runStudio(
   store: Store,

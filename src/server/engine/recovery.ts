@@ -1,5 +1,6 @@
+import { worldProblems } from "./scene-validation.js";
 import { requireAllocationIncrease } from "../access.js";
-import { HeartContract, StoryManuscript } from "../../shared/studio.js";
+import { HeartContract, StoryManuscript, VisualWorld, ScenePlan } from "../../shared/studio.js";
 import { Transcript } from "../../shared/contracts.js";
 import {
   heartProblems,
@@ -248,7 +249,18 @@ export function studioRecovery(store: Store, jobId: string) {
       "SELECT stage FROM studio_steps WHERE jobId=? AND stage='art_meaning_protocol_v2'",
       jobId,
     );
+  let sceneReferenceRepair = false;
+  if (job.status === "needs_editor" && job.stage === "scenes") {
+    try {
+      const read = (stage: string) => JSON.parse(store.one<{ result: string }>(
+        "SELECT result FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'", jobId, stage,
+      )!.result);
+      sceneReferenceRepair = worldProblems(VisualWorld.parse(read("world")),
+        StoryManuscript.parse(read("accepted_story").manuscript), ScenePlan.parse(read("scenes"))).length === 0;
+    } catch { /* Invalid or incomplete evidence cannot authorize recovery. */ }
+  }
   const localRepair =
+    sceneReferenceRepair ||
     metadataRepair ||
     evidenceRepair ||
     editorialRepair ||
@@ -281,6 +293,7 @@ export function studioRecovery(store: Store, jobId: string) {
     evidenceRepair,
     editorialRepair,
     localRepair,
+    sceneReferenceRepair,
     reviewCopyReady,
     artRequirementsRepair,
     artDirectionRepair,
@@ -301,7 +314,9 @@ export function studioRecovery(store: Store, jobId: string) {
     requestId: attempt.requestId,
     uncertain,
     extraReserveUsd: !pilot && uncertain ? attempt.estimatedCents / 100 : 0,
-    message: artRequirementsRepair
+    message: sceneReferenceRepair
+      ? "The saved scene cast passes corrected required-character validation. Continue using the saved story and scene plan."
+      : artRequirementsRepair
       ? "Saved reference images can be inspected against the correct model-sheet requirements. Earlier attempts remain saved; the correction limit is unchanged."
       : reviewCopyReady
         ? "The manuscript can continue as an illustrated review copy. Editorial notes remain visible; no claim of final literary approval is made."
