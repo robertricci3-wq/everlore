@@ -363,7 +363,11 @@ function Account({
     [inviteRequired, setInviteRequired] = useState(false),
     [adult, setAdult] = useState(false),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState<{
+      mode: "login" | "join";
+      message: string;
+    } | null>(null);
+  const mode = login ? "login" : "join";
   useEffect(() => {
     void api<{ inviteRequired?: boolean }>("/session").then((s) =>
       setInviteRequired(!!s.inviteRequired),
@@ -372,7 +376,7 @@ function Account({
   async function submit(event: React.SubmitEvent) {
     event.preventDefault();
     setBusy(true);
-    setError("");
+    setError(null);
     try {
       await api(
         login ? "/login" : "/register",
@@ -380,7 +384,9 @@ function Account({
       );
       await onDone();
     } catch (cause) {
-      setError((cause as Error).message);
+      // A request may finish after the person switches forms. Keep its error
+      // attached to the submitted action, without clearing their credentials.
+      setError({ mode, message: (cause as Error).message });
     } finally {
       setBusy(false);
     }
@@ -394,6 +400,23 @@ function Account({
           ? "Open the stories you’ve kept."
           : "Choose a shelf name and password to keep your recordings and family stories private."}
       </p>
+      {!login && (
+        <div>
+          <p>
+            Already have a shelf?{" "}
+            <a href="#/login" onClick={() => setError(null)}>
+              Sign in to your existing shelf
+            </a>.
+          </p>
+          {inviteRequired && (
+            <p className="small muted">
+              New shelves are invitation-only during the pilot. Enter the
+              invitation code you received below. You do not need a new
+              invitation to sign in to an existing shelf.
+            </p>
+          )}
+        </div>
+      )}
       <form onSubmit={(event) => void submit(event)}>
         <label>
           Shelf name
@@ -447,9 +470,9 @@ function Account({
             </span>
           </label>
         )}
-        {error && (
+        {error?.mode === mode && (
           <p className="alert" role="alert">
-            {error}
+            {error.message}
           </p>
         )}
         <button className="button full" disabled={busy || (!login && !adult)}>
@@ -467,7 +490,10 @@ function Account({
       </p>
       <button
         className="text-button"
-        onClick={() => go(login ? "/join" : "/login")}
+        onClick={() => {
+          setError(null);
+          go(login ? "/join" : "/login");
+        }}
       >
         {login ? "New here? Create a shelf" : "Already have a shelf? Sign in"}
       </button>
