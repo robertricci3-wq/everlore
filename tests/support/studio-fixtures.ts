@@ -307,6 +307,8 @@ export class StudioFake implements Provider {
           preserve: "Keep the protected family details.",
         })),
       };
+    else if (name === "whole_book_sequence_meaning_v3")
+      result = {spreads: Array.from({length:12},(_,i)=>({spread:i+1,identityConsistent:true,actionReadable:true,physicalCoherence:true,childAppropriate:true,unwantedLettering:false,protectedContradictions:[],evidence:["Synthetic complete-sequence observation"],refinements:[]}))};
     else if (name.endsWith("_meaning_review_v2"))
       result = {
         visibleCharacterIds:

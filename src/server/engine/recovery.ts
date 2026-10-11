@@ -264,7 +264,9 @@ export function studioRecovery(store: Store, jobId: string) {
     (store.one<{ n: number }>("SELECT COUNT(*) n FROM studio_steps WHERE jobId=? AND stage LIKE 'accepted_picture_meaning_v2_%' AND state='completed'", jobId)?.n ?? 0) < 12;
   const authorizedSceneAttempt = job.status === "needs_editor" && !!store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage LIKE 'scene_attempt_authorization_v1_%' AND NOT EXISTS(SELECT 1 FROM studio_steps p WHERE p.jobId=studio_steps.jobId AND p.stage=replace(studio_steps.stage,'scene_attempt_authorization_v1_','authorized_picture_v1_'))", jobId);
   const identityScopeRepair = job.status === "needs_editor" && !!store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage LIKE 'authorized_picture_v1_%' AND state='completed' AND result='null' AND NOT EXISTS(SELECT 1 FROM studio_steps p WHERE p.jobId=studio_steps.jobId AND p.stage=replace(studio_steps.stage,'authorized_picture_v1_','authorized_picture_scope_v1_'))", jobId);
+  const sequenceInputRepair = job.status === "needs_editor" && ["whole_book_review","whole_book_meaning_review_v2"].includes(job.stage) && !store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage=?",jobId,"whole_book_sequence_review_v2");
   const localRepair =
+    sequenceInputRepair ||
     identityScopeRepair ||
     authorizedSceneAttempt ||
     continueIndependentArt ||
@@ -305,6 +307,7 @@ export function studioRecovery(store: Store, jobId: string) {
     continueIndependentArt,
     authorizedSceneAttempt,
     identityScopeRepair,
+    sequenceInputRepair,
     reviewCopyReady,
     artRequirementsRepair,
     artDirectionRepair,

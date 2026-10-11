@@ -2591,32 +2591,33 @@ export async function runStudio(
     }
     if (new Set(artHashes).size !== 12)
       throw new EngineError("Repeated scene files need editorial review.");
+    // Whole-book inspection gets exactly twelve story images. Reference sheets
+    // are deliberately excluded: they are not additional pages of the book.
     const whole = await editorial(
-      "whole_book_review",
-      ProductionImageReview,
-      artReviewInstruction,
-      {
-        world,
-        scenes,
-        imageOrder: `The first ${refs.length} images are canonical character reference sheets, NOT story spreads. The following twelve images are story spreads 1 through 12 in order. Judge continuity, action and physical coherence against the specified scene for each spread.`,
-      },
-      [
-        ...refs.map((r) => store.readAsset(job.projectId, r.hash)),
-        ...artHashes.map((h) => store.readAsset(job.projectId, h)),
-      ],
+      "whole_book_sequence_review_v2", ProductionImageReview,
+      artReviewInstruction + " This is a complete book, not one candidate image. There are exactly TWELVE images: IMAGE N is spread N. No reference sheets are included. Review every spread and the sequence. An identity sheet or interaction study must never be counted as a story page. Cite spread numbers for each material concern. Distinguish style refinements from actual correctness defects.",
+      { world, scenes, manuscript, imageOrder: "Exactly twelve story spreads, 1 through 12, with no reference sheets." },
+      artHashes.map(h => store.readAsset(job.projectId,h)),
     );
-    const resolvedWhole = await resolveArtEvidence(
-      "whole_book",
-      whole,
-      {
-        scenes,
-        imageOrder: `Complete sequence: ${refs.length} canonical references first, then twelve spread images in order.`,
-      },
-      [
-        ...refs.map((r) => store.readAsset(job.projectId, r.hash)),
-        ...artHashes.map((h) => store.readAsset(job.projectId, h)),
-      ],
-    );
+    let resolvedWhole: z.infer<typeof ProductionImageReview> & {meaningVerified?:boolean} = whole;
+    if (!imageAccepted(whole) && !imageReviewCopyEligible(whole) && whole.identity >= 4 &&
+        Math.min(whole.style,whole.actionReadability,whole.physicalCoherence) >= 3) {
+      const sequenceSchema = z.object({ spreads: z.array(z.object({
+        spread:z.number().int().min(1).max(12), identityConsistent:z.boolean(),
+        actionReadable:z.boolean(), physicalCoherence:z.boolean(), childAppropriate:z.boolean(),
+        unwantedLettering:z.boolean(), protectedContradictions:z.array(z.string()),
+        evidence:z.array(z.string().min(1)).min(1), refinements:z.array(z.string()),
+      })).length(12) });
+      const sequence = await editorial("whole_book_sequence_meaning_v3",sequenceSchema,
+        "Inspect ALL TWELVE actual story images, one per numbered spread; IMAGE N is spread N. There are NO character reference sheets in this request. Return exactly one finding per spread 1–12. Compare each image with its own words and scene, and identities across the sequence. Words and pictures share meaning: images need not prove family relationships or every clause already supplied by the words. Anonymous witnesses are not new named relatives. Physical coherence fails for material broken anatomy, support or unreadable interaction, not normal occlusion or stylization. Clothing options and meaningful motifs supplied by canon are allowed. Cite specific visible evidence; preserve uncertainty for materially unverifiable required identities or actions. List genuine contradictions of protected source separately from harmless scene refinements. Inspect every image; do not evaluate only IMAGE 1 or shift numbering. No claim of audience validation or final art approval.",
+        { world, scenes, manuscript, protectedHeart:heart, imageOrder:"IMAGE 1 = spread 1 through IMAGE 12 = spread 12." },
+        artHashes.map(h=>store.readAsset(job.projectId,h)),
+      );
+      if (new Set(sequence.spreads.map(x=>x.spread)).size===12 && sequence.spreads.every(x=>
+          x.identityConsistent && x.actionReadable && x.physicalCoherence && x.childAppropriate &&
+          !x.unwantedLettering && !x.protectedContradictions.length))
+        resolvedWhole = { ...whole, meaningVerified:true, correctnessDefects:[], defects:[...whole.defects,...sequence.spreads.flatMap(x=>x.refinements)] };
+    }
     if (!imageGood(resolvedWhole)) {
       pause(
         "needs_editor",

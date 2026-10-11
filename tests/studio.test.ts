@@ -647,7 +647,7 @@ test("a late studio result cannot publish or change the status of a newer book",
     await runStudio(t.store, p, testConfig);
     approveStudioArt(t.store, "memory", { approved: true });
     p.onStructured = (name) => {
-      if (name === "whole_book_review")
+      if (name === "whole_book_sequence_review_v2")
         t.store.run(
           "UPDATE projects SET revision=7,title='Newer work',status='ready_for_review' WHERE id='memory'",
         );
@@ -733,7 +733,7 @@ test("one independent art evidence review resolves an unsupported allegation whi
     assert.equal(p.calls.filter((n) => n.startsWith("image_")).length, 14);
     assert.equal(
       p.calls.filter((n) => n.endsWith("_meaning_review_v2")).length,
-      15,
+      14,
     );
     const raw = JSON.parse(
       t.store.one<{ result: string }>(
@@ -998,4 +998,26 @@ for (const matches of [false, true]) test(`identity-scope adjudication is bounde
       assert.equal(p.calls.length,count);
     }
   } finally { t.close(); }
+});
+
+for (const completeCoverage of [false,true]) test(`whole-book inspection uses twelve story images and requires complete evidence (${completeCoverage})`,async()=>{
+ const t=setup(),p=new StudioFake(),original=p.structured.bind(p);
+ p.structured=async(name,schema,instructions,data,images)=>{
+  if(name.startsWith("whole_book_sequence_")) {
+   assert.equal(images!.length,12);
+   const expected=Array.from({length:12},(_,i)=>JSON.parse(t.store.one<{result:string}>("SELECT result FROM studio_steps WHERE stage=?",`accepted_picture_meaning_v2_${i+1}`)!.result));
+   assert.deepEqual(images!.map(hash),expected);
+  }
+  const result=await original(name,schema,instructions,data,images);
+  if(name==="whole_book_sequence_review_v2") return schema.parse({...result,physicalCoherence:3,defects:["Inspect contact at read-aloud size"],correctnessDefects:["Possible contact ambiguity"]});
+  if(name==="whole_book_sequence_meaning_v3"&&!completeCoverage){const r=result as {spreads:{spread:number}[]};r.spreads[11].spread=1;return schema.parse(r);}
+  return result;
+ };
+ try {
+  queueStudio(t.store,t.project(),{...consent,autonomous:true},testConfig);
+  await runStudio(t.store,p,testConfig);
+  assert.equal(studioView(t.store,"memory")!.status,completeCoverage?"complete":"needs_editor");
+  const raw=JSON.parse(t.store.one<{result:string}>("SELECT result FROM studio_steps WHERE stage=?","whole_book_sequence_review_v2")!.result);
+  assert.equal(raw.physicalCoherence,3);
+ }finally{t.close();}
 });
