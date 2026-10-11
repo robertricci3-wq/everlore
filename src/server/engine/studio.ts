@@ -1,3 +1,4 @@
+import { DigitalReviewCopyAuthorization } from "./review-copy-authorization.js";
 import { IdentityScopeReview, identityScopePasses } from "./identity-scope.js";
 import { SceneAttemptAuthorization } from "./scene-attempt.js";
 import { worldProblems } from "./scene-validation.js";
@@ -2618,12 +2619,18 @@ export async function runStudio(
           !x.unwantedLettering && !x.protectedContradictions.length))
         resolvedWhole = { ...whole, meaningVerified:true, correctnessDefects:[], defects:[...whole.defects,...sequence.spreads.flatMap(x=>x.refinements)] };
     }
+    const reviewCopyRaw = studioCached(store,job.id,"digital_review_copy_authorization_v1");
+    const reviewCopyAuthorization = reviewCopyRaw ? DigitalReviewCopyAuthorization.parse(reviewCopyRaw) : null;
+    if (reviewCopyAuthorization && (reviewCopyAuthorization.baseRevision !== job.baseRevision ||
+        reviewCopyAuthorization.manuscriptHash !== hash(canonical(manuscript)) ||
+        canonical(reviewCopyAuthorization.artHashes) !== canonical(artHashes)))
+      throw new EngineError("The review-copy approval no longer matches this book.");
     if (!imageGood(resolvedWhole)) {
-      pause(
-        "needs_editor",
-        "The whole-book continuity review found issues. All accepted art is saved for targeted correction.",
-      );
-      return true;
+      if (!reviewCopyAuthorization) {
+        pause("needs_editor", "The whole-book continuity review found issues. All accepted art is saved for targeted correction.");
+        return true;
+      }
+      artNotes.push("Operator authorized this exact digital review copy for feedback; automatic whole-book review remains unresolved. Not approved for printing.", ...resolvedWhole.defects, ...resolvedWhole.correctnessDefects);
     }
     const production = ProductionSnapshot.parse({
       version: 2,
@@ -2643,6 +2650,7 @@ export async function runStudio(
       heartReview: accepted.heartReview,
       editorialReview: accepted.editorialReview,
       humanReview: "pending",
+      ...(reviewCopyAuthorization ? {reviewCopyException: {id:reviewCopyAuthorization.id,approvedAt:reviewCopyAuthorization.approvedAt,scope:reviewCopyAuthorization.scope}} : {}),
       artStatus: artNotes.length ? "revision_recommended" : "passed",
       artNotes: [...new Set(artNotes)],
       editorialStatus: accepted.verdict.passed

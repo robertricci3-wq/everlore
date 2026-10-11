@@ -1,3 +1,4 @@
+import { authorizeDigitalReviewCopy } from "../src/server/engine/review-copy-authorization.js";
 import { authorizeSceneAttempt } from "../src/server/engine/scene-attempt.js";
 import { configureAccess } from "../src/server/access.js";
 import { test } from "node:test";
@@ -1019,5 +1020,37 @@ for (const completeCoverage of [false,true]) test(`whole-book inspection uses tw
   assert.equal(studioView(t.store,"memory")!.status,completeCoverage?"complete":"needs_editor");
   const raw=JSON.parse(t.store.one<{result:string}>("SELECT result FROM studio_steps WHERE stage=?","whole_book_sequence_review_v2")!.result);
   assert.equal(raw.physicalCoherence,3);
+ }finally{t.close();}
+});
+
+
+for (const changed of [false,true]) test(`explicit digital-review-copy release is exact, operator-only and unpaid (changed=${changed})`,async()=>{
+ const t=setup(),p=new StudioFake(),original=p.structured.bind(p);
+ p.structured=async(name,schema,instructions,data,images)=>{
+  const result=await original(name,schema,instructions,data,images);
+  return name==="whole_book_sequence_review_v2" ? schema.parse({...result,identity:3,correctnessDefects:["Retained sequence concern"]}) : result;
+ };
+ try {
+  configureAccess(t.store,false,"owner");
+  queueStudio(t.store,t.project(),{...consent,autonomous:true},testConfig);
+  await runStudio(t.store,p,testConfig);
+  assert.equal(studioView(t.store,"memory")!.status,"needs_editor");
+  const job=t.store.one<{id:string}>("SELECT id FROM studio_jobs")!;
+  assert.throws(()=>authorizeDigitalReviewCopy(t.store,job.id,"other","Allow this review copy"));
+  const approval=authorizeDigitalReviewCopy(t.store,job.id,"owner","Explicitly approve this exact digital feedback copy.");
+  const calls=p.calls.length;
+  if(changed)t.store.run("UPDATE studio_steps SET result=? WHERE stage=?",JSON.stringify({...approval,manuscriptHash:"a".repeat(64)}),"digital_review_copy_authorization_v1");
+  t.store.run("UPDATE studio_jobs SET status='queued'");
+  await runStudio(t.store,p,testConfig);
+  assert.equal(p.calls.length,calls);
+  if(changed){assert.equal(t.store.all("SELECT * FROM editions").length,0);assert.equal(studioView(t.store,"memory")!.status,"needs_attention");}
+  else {
+   assert.equal(studioView(t.store,"memory")!.status,"complete");
+   const book=Book.parse(JSON.parse(t.store.one<{book:string}>("SELECT book FROM editions")!.book));
+   assert.equal(book.production!.artStatus,"revision_recommended");
+   assert.equal(book.production!.reviewCopyException!.scope,"digital_feedback_only");
+   assert.equal(book.production!.humanReview,"pending");
+   assert(book.production!.artNotes?.includes("Retained sequence concern"));
+  }
  }finally{t.close();}
 });

@@ -333,6 +333,7 @@ export const ProductionSnapshot = z.object({
   heartReview: HeartReview,
   editorialReview: EditorialReview,
   humanReview: z.enum(["pending", "approved"]),
+  reviewCopyException: z.object({id:z.string(),approvedAt:z.string(),scope:z.literal("digital_feedback_only")}).optional(),
 });
 export type Snapshot = z.infer<typeof ProductionSnapshot>;
 export const RepairRequest = z.object({
