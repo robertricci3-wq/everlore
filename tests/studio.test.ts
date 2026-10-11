@@ -963,3 +963,39 @@ test("semantic correction forwards correctness findings separately from artistic
     }
   } finally { t.close(); }
 });
+
+for (const matches of [false, true]) test(`identity-scope adjudication is bounded and never renders another image (matches=${matches})`, async () => {
+  const t = setup(), p = new StudioFake(), original = p.structured.bind(p);
+  p.onStructured = name => { p.incorrectArt = name.startsWith("picture_7_"); };
+  p.structured = async (name, schema, instructions, data, images) => {
+    if (name.endsWith("_identity_scope_v1")) {
+      p.calls.push(name);
+      const d = data as { expectedCharacters: { id:string }[] };
+      return schema.parse({characters:d.expectedCharacters.map(c=>({id:c.id,recognizable:matches,evidence:"Synthetic canonical comparison"})),unexpectedNamedCharacters:[],materialContradictions:[],actionReadable:true,physicalCoherence:true,childAppropriate:true});
+    }
+    const result = await original(name,schema,instructions,data,images);
+    if (name.includes("authorized_extra") && name.endsWith("_meaning_review_v2")) {
+      const d = data as {expectedCharacterIds:string[]};
+      return schema.parse({...result,visibleCharacterIds:d.expectedCharacterIds,unexpectedForegroundCharacters:[],identityConsistent:false,protectedContradictions:[]});
+    }
+    return result;
+  };
+  try {
+    configureAccess(t.store,false,"owner");
+    queueStudio(t.store,t.project(),{...consent,autonomous:true},testConfig);
+    await runStudio(t.store,p,testConfig);
+    const job=t.store.one<{id:string}>("SELECT id FROM studio_jobs")!;
+    authorizeSceneAttempt(t.store,job.id,"owner",7,"One targeted correction with stable canonical identities.");
+    t.store.run("UPDATE studio_jobs SET status='queued'");
+    await runStudio(t.store,p,testConfig);
+    assert.equal(p.calls.filter(n=>n.endsWith("_identity_scope_v1")).length,1);
+    assert.equal(p.calls.filter(n=>n.startsWith("image_")).length,17);
+    assert.equal(studioView(t.store,"memory")!.status,matches?"complete":"needs_editor");
+    if (!matches) {
+      const count=p.calls.length;
+      t.store.run("UPDATE studio_jobs SET status='queued'");
+      await runStudio(t.store,p,testConfig);
+      assert.equal(p.calls.length,count);
+    }
+  } finally { t.close(); }
+});

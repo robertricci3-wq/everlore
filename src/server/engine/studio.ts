@@ -1,3 +1,4 @@
+import { IdentityScopeReview, identityScopePasses } from "./identity-scope.js";
 import { SceneAttemptAuthorization } from "./scene-attempt.js";
 import { worldProblems } from "./scene-validation.js";
 import { isRecoveryLocked } from "../recovery-lock.js";
@@ -2533,12 +2534,35 @@ export async function runStudio(
       if (authorization.spread !== i + 1 || authorization.baseRevision !== job.baseRevision ||
           authorization.priorHash !== studioCached(store, job.id, `picture_${i + 1}_attempt_3`))
         throw new EngineError("The illustration authorization no longer matches this checkpoint.");
-      return step(`authorized_picture_v1_${i + 1}`, { authorization, scene: scenes.scenes[i], world, references: refs },
+      const directed = await step(`authorized_picture_v1_${i + 1}`, { authorization, scene: scenes.scenes[i], world, references: refs },
         () => paint(`picture_${i + 1}_authorized_extra_v1`, {
           world, scene: scenes.scenes[i],
           direction: authorization.instruction,
           preservation: "Preserve canonical identities, source particulars, scene action and the whole book's painted visual language. The explicit direction clarifies staging, not remembered facts.",
         }, refs.map(r => store.readAsset(job.projectId, r.hash)), 1), "local");
+      if (directed) return directed;
+      const name = `picture_${i + 1}_authorized_extra_v1`;
+      const review = studioCached<z.infer<typeof ProductionImageReview>>(store, job.id, `${name}_requirements_v4_review_1`);
+      const meaning = studioCached<{ visibleCharacterIds: string[]; unexpectedForegroundCharacters: string[]; identityConsistent: boolean; actionReadable: boolean; physicalCoherence: boolean; childAppropriate: boolean; unwantedLettering: boolean; protectedContradictions: unknown[] }>(store, job.id, `${name}_attempt_1_meaning_review_v2`);
+      const expected = scenes.scenes[i].characterIds;
+      // One narrowly scoped adjudication for conflicting identity findings only.
+      // It cannot rescue bad action, unsafe content, extra cast or source violations.
+      if (!review || !meaning || review.identity < 4 || review.style < 3 ||
+          review.actionReadability < 4 || review.physicalCoherence < 4 ||
+          meaning.identityConsistent || !meaning.actionReadable || !meaning.physicalCoherence ||
+          !meaning.childAppropriate || meaning.unwantedLettering || meaning.protectedContradictions.length ||
+          meaning.unexpectedForegroundCharacters.length || meaning.visibleCharacterIds.length !== expected.length ||
+          expected.some(id => !meaning.visibleCharacterIds.includes(id))) return null;
+      const digest = studioCached<string>(store, job.id, `${name}_attempt_1`)!;
+      const scoped = await step(`authorized_picture_scope_v1_${i + 1}`, { authorization, digest, scene: scenes.scenes[i], world, references: refs }, async () => {
+        const finding = await editorial(`${name}_identity_scope_v1`, IdentityScopeReview,
+          "Inspect actual pixels against canonical references. Return one evidence-linked identity finding for EACH required character ID, and no other ID. Recognizable means consistent species, silhouette, characteristic colors and face; permitted wardrobe states and natural pose changes are valid. Evaluate material action, anatomy, child suitability and protected source contradictions separately. Anonymous officiants or distant witnesses are not named cast. Kinship that the manuscript supplies cannot be proved from pixels alone and is not an identity defect; do not demand a reference design for an unlisted anonymous person. Do not excuse a changed required character, unexpected recognizable family member or material contradiction. Style preferences remain separate refinements. If a required identity cannot be verified, mark it false. This is one scope adjudication, not final art approval.",
+          { expectedCharacters: world.characters.filter(c => expected.includes(c.id)), scene: scenes.scenes[i], words: manuscript.spreads[i].text, protectedHeart: heart, imageOrder: "Candidate first; stable canonical references follow." },
+          [store.readAsset(job.projectId, digest), ...refs.map(r => store.readAsset(job.projectId, r.hash))]);
+        return identityScopePasses(finding, expected) ? digest : null;
+      }, "local");
+      if (scoped) artNotes.push("Identity scope checked separately; original critiques and artistic refinements retained.", ...review.defects);
+      return scoped;
     };
     for (const i of [0, 5, 10])
       if (!(await picture(i))) {
