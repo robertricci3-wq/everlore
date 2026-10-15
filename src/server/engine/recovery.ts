@@ -1,6 +1,7 @@
 import { worldProblems } from "./scene-validation.js";
+import { currentReviewedStory } from "./operator-editorial-revision.js";
 import { requireAllocationIncrease } from "../access.js";
-import { HeartContract, StoryManuscript, VisualWorld, ScenePlan } from "../../shared/studio.js";
+import { HeartContract, StoryManuscript, VisualWorld, ScenePlan, type Snapshot } from "../../shared/studio.js";
 import { Transcript } from "../../shared/contracts.js";
 import {
   heartProblems,
@@ -156,22 +157,23 @@ export function studioRecovery(store: Store, jobId: string) {
   if (
     job.status === "needs_editor" &&
     /_(craft|poetics)$/.test(job.stage) &&
+    !!store.one(
+      "SELECT stage FROM studio_steps WHERE jobId=? AND stage IN ('accepted_story_editorial_attention_v1','operator_editorial_revision_v1','operator_editorial_revision_v2') LIMIT 1",
+      jobId,
+    ) &&
     !store.one(
       "SELECT stage FROM studio_steps WHERE jobId=? AND stage='scenes'",
       jobId,
     )
   ) {
-    const candidate = store.one<{ result: string }>(
-      "SELECT result FROM studio_steps WHERE jobId=? AND stage IN ('accepted_story_operator_revision_v1','accepted_story_editorial_attention_v1') AND state='completed' ORDER BY CASE stage WHEN 'accepted_story_operator_revision_v1' THEN 0 ELSE 1 END LIMIT 1",
-      jobId,
-    );
+    const candidate = currentReviewedStory<Pick<Snapshot, "manuscript" | "heartReview" | "editorialReview">>(store, jobId);
     const saved = store.one<{ state: string }>(
       "SELECT state FROM studio_jobs WHERE id=?",
       jobId,
     );
     if (candidate && saved)
       try {
-        const c = JSON.parse(candidate.result),
+        const c = candidate,
           h = HeartContract.parse(JSON.parse(saved.state).heart);
         reviewCopyReady = canAssembleReviewCopy(
           evaluateStory(h, c.manuscript, c.heartReview, c.editorialReview),
@@ -255,12 +257,8 @@ export function studioRecovery(store: Store, jobId: string) {
       const read = (stage: string) => JSON.parse(store.one<{ result: string }>(
         "SELECT result FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'", jobId, stage,
       )!.result);
-      const readOptional = (stage: string) => {
-        const row = store.one<{ result: string }>("SELECT result FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'", jobId, stage);
-        return row ? JSON.parse(row.result) : null;
-      };
       sceneReferenceRepair = worldProblems(VisualWorld.parse(read("world")),
-        StoryManuscript.parse((readOptional("accepted_story_operator_revision_v1") ?? readOptional("accepted_story_editorial_attention_v1") ?? read("accepted_story")).manuscript), ScenePlan.parse(read("scenes"))).length === 0;
+        StoryManuscript.parse(currentReviewedStory<{ manuscript: unknown }>(store, jobId)?.manuscript), ScenePlan.parse(read("scenes"))).length === 0;
     } catch { /* Invalid or incomplete evidence cannot authorize recovery. */ }
   }
   const continueIndependentArt = job.status === "needs_editor" &&

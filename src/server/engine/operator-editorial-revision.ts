@@ -20,6 +20,10 @@ export const OPERATOR_EDITORIAL_REVISION_STAGE =
   "operator_editorial_revision_v1";
 export const OPERATOR_EDITORIAL_ACCEPTED_STAGE =
   "accepted_story_operator_revision_v1";
+export const OPERATOR_EDITORIAL_REVISION_V2_STAGE =
+  "operator_editorial_revision_v2";
+export const OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE =
+  "accepted_story_operator_revision_v2";
 export const OperatorEditorialRevisionInput = z
   .object({
     ownerId: z.string().min(1),
@@ -52,6 +56,26 @@ export const OperatorEditorialRevisionRecord =
     policyHash: digest,
     frozenSourceHash: digest,
   }).strict();
+export const OperatorEditorialRevisionV2Input =
+  OperatorEditorialRevisionInput.extend({ baseCandidateHash: digest }).strict();
+export const OperatorEditorialRevisionV2Record =
+  OperatorEditorialRevisionRecord.extend({
+    version: z.literal(2),
+    baseCandidateHash: digest,
+  }).strict();
+type RevisionVersion = 1 | 2;
+const revisionStage = (version: RevisionVersion) =>
+  version === 1
+    ? OPERATOR_EDITORIAL_REVISION_STAGE
+    : OPERATOR_EDITORIAL_REVISION_V2_STAGE;
+const acceptedBaseStage = (version: RevisionVersion) =>
+  version === 1
+    ? "accepted_story_editorial_attention_v1"
+    : OPERATOR_EDITORIAL_ACCEPTED_STAGE;
+const submissionBaseStage = (version: RevisionVersion) =>
+  version === 1
+    ? "editorial_attention_submission_v1"
+    : OPERATOR_EDITORIAL_REVISION_STAGE;
 const fingerprint = (
   body: z.infer<typeof OperatorEditorialRevisionInput>,
   actorId: string,
@@ -80,7 +104,16 @@ function forbiddenControls(value: unknown): boolean {
     Object.values(value).some(forbiddenControls)
   );
 }
-function textStage(stage: string) {
+function textStage(stage: string, version: RevisionVersion) {
+  if (
+    version === 2 &&
+    ([
+      OPERATOR_EDITORIAL_REVISION_STAGE,
+      OPERATOR_EDITORIAL_ACCEPTED_STAGE,
+    ].includes(stage) ||
+      /^operator_revision_v1_(?:heart|craft|poetics)$/.test(stage))
+  )
+    return true;
   return (
     [
       "transcription",
@@ -115,7 +148,39 @@ export function applyOperatorEditorialRevision(
   input: unknown,
   config: EngineConfig,
 ) {
-  const body = OperatorEditorialRevisionInput.parse(input);
+  return OperatorEditorialRevisionRecord.parse(
+    applyRevision(store, actorId, input, config, 1),
+  );
+}
+
+/** A separate explicit approval is required for this second and final supplied revision. */
+export function applyOperatorEditorialRevisionV2(
+  store: Store,
+  actorId: string,
+  input: unknown,
+  config: EngineConfig,
+) {
+  return OperatorEditorialRevisionV2Record.parse(
+    applyRevision(store, actorId, input, config, 2),
+  );
+}
+
+function applyRevision(
+  store: Store,
+  actorId: string,
+  input: unknown,
+  config: EngineConfig,
+  version: RevisionVersion,
+) {
+  const inputSchema =
+    version === 1
+      ? OperatorEditorialRevisionInput
+      : OperatorEditorialRevisionV2Input;
+  const recordSchema =
+    version === 1
+      ? OperatorEditorialRevisionRecord
+      : OperatorEditorialRevisionV2Record;
+  const body = inputSchema.parse(input);
   return store.transaction(() => {
     requireOperator(store, actorId);
     const job = store.one<{
@@ -145,15 +210,13 @@ export function applyOperatorEditorialRevision(
         "This owner's original story job could not be found.",
       );
     const inputHash = fingerprint(body, actorId);
-    const prior = read(store, job.id, OPERATOR_EDITORIAL_REVISION_STAGE);
+    const prior = read(store, job.id, revisionStage(version));
     if (prior) {
-      const record = OperatorEditorialRevisionRecord.parse(prior.value);
+      const record = recordSchema.parse(prior.value);
       if (
         prior.inputHash !== inputHash ||
-        fingerprint(
-          OperatorEditorialRevisionInput.strip().parse(record),
-          record.actorId,
-        ) !== inputHash
+        fingerprint(inputSchema.strip().parse(record), record.actorId) !==
+          inputHash
       )
         throw new EngineError(
           "This one-time editorial revision is immutable; the retry differs.",
@@ -184,7 +247,11 @@ export function applyOperatorEditorialRevision(
     if (
       isRecoveryLocked(store) ||
       job.status !== "needs_editor" ||
-      !/^editorial_attention_v1_(?:heart|craft|poetics)$/.test(job.stage) ||
+      !(
+        version === 1
+          ? /^editorial_attention_v1_(?:heart|craft|poetics)$/
+          : /^operator_revision_v1_(?:heart|craft|poetics)$/
+      ).test(job.stage) ||
       job.leaseToken !== null ||
       job.leaseUntil !== 0 ||
       job.baseRevision !== 0 ||
@@ -215,7 +282,9 @@ export function applyOperatorEditorialRevision(
       job.id,
     );
     if (
-      steps.some((s) => !textStage(s.stage) || s.state !== "completed") ||
+      steps.some(
+        (s) => !textStage(s.stage, version) || s.state !== "completed",
+      ) ||
       [
         "accepted_story",
         "draft_1",
@@ -231,7 +300,7 @@ export function applyOperatorEditorialRevision(
         )
         .some(
           (c) =>
-            !textStage(c.stage) ||
+            !textStage(c.stage, version) ||
             c.kind === "image" ||
             !["completed", "rejected"].includes(c.status),
         ) ||
@@ -247,12 +316,19 @@ export function applyOperatorEditorialRevision(
       throw new EngineError(
         "Unfinished, visual, or ambiguous work prevents an editorial revision.",
       );
-    const accepted = read(
-      store,
-      job.id,
-      "accepted_story_editorial_attention_v1",
-    );
-    const submission = read(store, job.id, "editorial_attention_submission_v1");
+    const accepted = read(store, job.id, acceptedBaseStage(version));
+    const submission = read(store, job.id, submissionBaseStage(version));
+    if (
+      version === 2 &&
+      (!readOperatorEditorialRevision(store, job.id) ||
+        !accepted ||
+        accepted.value.verdict?.passed !== false ||
+        !("baseCandidateHash" in body) ||
+        body.baseCandidateHash !== hash(canonical(accepted.value)))
+    )
+      throw new EngineError(
+        "The second revision requires the exact failed first operator review.",
+      );
     if (
       !accepted ||
       !submission ||
@@ -347,9 +423,9 @@ export function applyOperatorEditorialRevision(
       throw new EngineError(
         "The supplied revision fails its exact hash, source references, or mechanical limits.",
       );
-    const record = OperatorEditorialRevisionRecord.parse({
+    const record = recordSchema.parse({
       ...body,
-      version: 1,
+      version,
       id: id(),
       actorId,
       createdAt: now(),
@@ -363,7 +439,7 @@ export function applyOperatorEditorialRevision(
     store.run(
       "INSERT INTO studio_steps VALUES(?,?,?,'completed',?)",
       job.id,
-      OPERATOR_EDITORIAL_REVISION_STAGE,
+      revisionStage(version),
       inputHash,
       canonical(record),
     );
@@ -381,10 +457,28 @@ export function applyOperatorEditorialRevision(
 
 /** Validate the immutable operator input again before its independent reviews. */
 export function readOperatorEditorialRevision(store: Store, jobId: string) {
-  const saved = read(store, jobId, OPERATOR_EDITORIAL_REVISION_STAGE);
+  const record = readRevision(store, jobId, 1);
+  return record ? OperatorEditorialRevisionRecord.parse(record) : null;
+}
+export function readOperatorEditorialRevisionV2(store: Store, jobId: string) {
+  const record = readRevision(store, jobId, 2);
+  return record ? OperatorEditorialRevisionV2Record.parse(record) : null;
+}
+function readRevision(store: Store, jobId: string, version: RevisionVersion) {
+  const saved = read(store, jobId, revisionStage(version));
   if (!saved) return null;
-  const record = OperatorEditorialRevisionRecord.parse(saved.value);
-  const body = OperatorEditorialRevisionInput.strip().parse(record);
+  const recordSchema =
+    version === 1
+      ? OperatorEditorialRevisionRecord
+      : OperatorEditorialRevisionV2Record;
+  const inputSchema =
+    version === 1
+      ? OperatorEditorialRevisionInput
+      : OperatorEditorialRevisionV2Input;
+  const record = recordSchema.parse(saved.value);
+  const body = inputSchema.strip().parse(record);
+  if (version === 2 && !readOperatorEditorialRevision(store, jobId))
+    throw new EngineError("The first operator revision binding is missing.");
   const job = store.one<{
     profile: string;
     request: string;
@@ -420,8 +514,14 @@ export function readOperatorEditorialRevision(store: Store, jobId: string) {
       record.projectId,
     );
   const request = JSON.parse(job.request);
-  const accepted = read(store, jobId, "accepted_story_editorial_attention_v1");
+  const accepted = read(store, jobId, acceptedBaseStage(version));
+  const submission = read(store, jobId, submissionBaseStage(version));
   if (
+    (version === 2 &&
+      (!accepted ||
+        accepted.value.verdict?.passed !== false ||
+        !("baseCandidateHash" in record) ||
+        record.baseCandidateHash !== hash(canonical(accepted.value)))) ||
     record.jobId !== jobId ||
     job.projectId !== record.projectId ||
     job.kind !== "generation" ||
@@ -446,9 +546,46 @@ export function readOperatorEditorialRevision(store: Store, jobId: string) {
     hash(canonical(Transcript.parse(JSON.parse(job.state).source))) !==
       record.sourceHash ||
     !accepted ||
+    !submission ||
+    accepted.inputHash !==
+      hash(canonical({ input: submission.value, profile: job.profile })) ||
+    !same(accepted.value.manuscript, submission.value.manuscript) ||
     hash(canonical(accepted.value)) !== record.reviewedCandidateHash ||
     hash(canonical(accepted.value.manuscript)) !== record.baseManuscriptHash
   )
     throw new EngineError("The approved editorial revision binding changed.");
   return record;
+}
+
+/** A newer submitted revision suppresses earlier acceptance even while its review is incomplete. */
+export function currentReviewedStory<T = unknown>(
+  store: Store,
+  jobId: string,
+): T | null {
+  for (const [submission, accepted] of [
+    [
+      OPERATOR_EDITORIAL_REVISION_V2_STAGE,
+      OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
+    ],
+    [OPERATOR_EDITORIAL_REVISION_STAGE, OPERATOR_EDITORIAL_ACCEPTED_STAGE],
+  ]) {
+    if (
+      store.one(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage IN (?,?) LIMIT 1",
+        jobId,
+        submission,
+        accepted,
+      )
+    )
+      return (read(store, jobId, accepted)?.value as T | undefined) ?? null;
+  }
+  for (const stage of [
+    "accepted_story_editorial_attention_v1",
+    "accepted_story_evidence_v1",
+    "accepted_story",
+  ]) {
+    const candidate = read(store, jobId, stage);
+    if (candidate) return candidate.value as T;
+  }
+  return null;
 }

@@ -34,8 +34,14 @@ import { requestStudioPause } from "../src/server/engine/budget.js";
 import { resumeStudio, studioRecovery } from "../src/server/engine/recovery.js";
 import {
   applyOperatorEditorialRevision,
+  applyOperatorEditorialRevisionV2,
   readOperatorEditorialRevision,
+  readOperatorEditorialRevisionV2,
+  currentReviewedStory,
   OPERATOR_EDITORIAL_REVISION_STAGE,
+  OPERATOR_EDITORIAL_REVISION_V2_STAGE,
+  OPERATOR_EDITORIAL_ACCEPTED_STAGE,
+  OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
 } from "../src/server/engine/operator-editorial-revision.js";
 import {
   StudioFake,
@@ -255,6 +261,25 @@ async function fixture() {
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+async function secondRevision(t: Fixture) {
+  applyOperatorEditorialRevision(t.store, "operator", t.input, t.base);
+  await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+  const previous = t.read(OPERATOR_EDITORIAL_ACCEPTED_STAGE);
+  assert.equal(previous.verdict.passed, false);
+  const manuscript = structuredClone(previous.manuscript);
+  manuscript.title = "A second explicitly approved synthetic story";
+  return {
+    ...t.input,
+    baseManuscriptHash: hash(canonical(previous.manuscript)),
+    baseCandidateHash: hash(canonical(previous)),
+    manuscript,
+    manuscriptHash: hash(canonical(manuscript)),
+    approval: {
+      quote: "I approve this exact second synthetic revision for this test.",
+      receivedAt: now(),
+    },
+  };
+}
 const retained = (t: Fixture) =>
   canonical({
     steps: t.store.all(
@@ -617,6 +642,365 @@ test("post-approval source snapshot drift stops before any new review call", asy
       () => readOperatorEditorialRevision(t.store, t.job.id),
       /binding changed/,
     );
+  } finally {
+    t.close();
+  }
+});
+
+test("second approved revision retains v1 and all prior calls, adds three distinct reviews, and resumes scenes once", async (ctx) => {
+  const network = ctx.mock.method(globalThis, "fetch", async () => {
+    throw new Error("No network allowed");
+  });
+  const t = await fixture();
+  try {
+    const input = await secondRevision(t);
+    const oldSteps = t.store.all<{
+      stage: string;
+      inputHash: string;
+      state: string;
+      result: string;
+    }>(
+      "SELECT stage,inputHash,state,result FROM studio_steps WHERE jobId=? ORDER BY stage",
+      t.job.id,
+    );
+    const oldCalls = t.store.all<{ id: string }>(
+      "SELECT * FROM studio_calls WHERE jobId=? ORDER BY id",
+      t.job.id,
+    );
+    const oldSource = canonical(t.store.all("SELECT * FROM almanac_sources"));
+    const oldRequest = canonical(
+      t.store.one(
+        "SELECT request,profile,state,allowance FROM studio_jobs WHERE id=?",
+        t.job.id,
+      ),
+    );
+    const previousCalls = [...t.painter.calls];
+    const receipt = applyOperatorEditorialRevisionV2(
+      t.store,
+      "operator",
+      input,
+      t.base,
+    );
+    assert.equal(receipt.version, 2);
+    assert.equal(receipt.baseCandidateHash, input.baseCandidateHash);
+    assert.equal(
+      currentReviewedStory(t.store, t.job.id),
+      null,
+      "pending v2 cannot expose an older acceptance",
+    );
+    assert.deepEqual(
+      readOperatorEditorialRevisionV2(t.store, t.job.id),
+      receipt,
+    );
+    assert.deepEqual(
+      applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base),
+      receipt,
+    );
+    assert.equal(
+      canonical(t.store.all("SELECT * FROM almanac_sources")),
+      oldSource,
+    );
+    assert.equal(
+      canonical(
+        t.store.one(
+          "SELECT request,profile,state,allowance FROM studio_jobs WHERE id=?",
+          t.job.id,
+        ),
+      ),
+      oldRequest,
+    );
+    assert.equal(t.store.all("SELECT id FROM studio_jobs").length, 1);
+    assert.equal(
+      t.store.all("SELECT id FROM almanac_creation_requests").length,
+      1,
+    );
+    t.painter.weak = false;
+    t.painter.onStructured = (name) => {
+      if (name === "operator_revision_v2_poetics")
+        requestStudioPause(t.store, t.job.id);
+    };
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.deepEqual(t.painter.calls.slice(previousCalls.length), [
+      "operator_revision_v2_heart",
+      "operator_revision_v2_craft",
+      "operator_revision_v2_poetics",
+    ]);
+    assert.deepEqual(
+      t.read(OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE).manuscript,
+      input.manuscript,
+    );
+    assert.deepEqual(
+      currentReviewedStory(t.store, t.job.id),
+      t.read(OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE),
+    );
+    const recovery = studioRecovery(t.store, t.job.id)!;
+    resumeStudio(
+      t.store,
+      t.store.one<ProjectRow>(
+        "SELECT * FROM projects WHERE id=?",
+        t.job.projectId,
+      )!,
+      {
+        jobId: t.job.id,
+        callId: recovery.callId,
+        acknowledgePossibleCharge: false,
+      },
+      t.base,
+    );
+    t.painter.onStructured = (name) => {
+      if (name === "scenes") requestStudioPause(t.store, t.job.id);
+    };
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.deepEqual(
+      (t.seen.find((r) => r.name === "scenes")!.data as { manuscript: unknown })
+        .manuscript,
+      input.manuscript,
+    );
+    for (const stage of previousCalls)
+      assert.equal(t.painter.calls.filter((s) => s === stage).length, 1, stage);
+    for (const step of oldSteps)
+      assert.deepEqual(
+        t.store.one(
+          "SELECT stage,inputHash,state,result FROM studio_steps WHERE jobId=? AND stage=?",
+          t.job.id,
+          step.stage,
+        ),
+        step,
+      );
+    for (const call of oldCalls)
+      assert.deepEqual(
+        t.store.one("SELECT * FROM studio_calls WHERE id=?", call.id),
+        call,
+      );
+    const status = t.store.one(
+      "SELECT status,stage FROM studio_jobs WHERE id=?",
+      t.job.id,
+    );
+    assert.deepEqual(
+      applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base),
+      receipt,
+    );
+    assert.deepEqual(
+      t.store.one("SELECT status,stage FROM studio_jobs WHERE id=?", t.job.id),
+      status,
+    );
+    assert.deepEqual(
+      applyOperatorEditorialRevision(t.store, "operator", t.input, t.base)
+        .version,
+      1,
+    );
+    assert.equal(network.mock.callCount(), 0);
+  } finally {
+    t.close();
+  }
+});
+
+test("v2 requires the exact failed v1 candidate, unchanged scope, and safe stopped job; differing retries reject", async () => {
+  const t = await fixture();
+  try {
+    assert.throws(
+      () =>
+        applyOperatorEditorialRevisionV2(
+          t.store,
+          "operator",
+          { ...t.input, baseCandidateHash: hash("missing") },
+          t.base,
+        ),
+      /stopped original/,
+    );
+    const input = await secondRevision(t);
+    const before = retained(t);
+    for (const change of [
+      { baseCandidateHash: hash("stale review") },
+      { baseManuscriptHash: t.input.baseManuscriptHash },
+      { sourceHash: hash("different source") },
+      { profileHash: hash("different profile") },
+      { ownerId: "other" },
+    ]) {
+      assert.throws(() =>
+        applyOperatorEditorialRevisionV2(
+          t.store,
+          "operator",
+          { ...input, ...change },
+          t.base,
+        ),
+      );
+      assert.equal(retained(t), before);
+    }
+    assert.throws(() =>
+      applyOperatorEditorialRevisionV2(t.store, "family", input, t.base),
+    );
+    const candidate = t.read(OPERATOR_EDITORIAL_ACCEPTED_STAGE);
+    t.store.run(
+      "UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?",
+      canonical({
+        ...candidate,
+        verdict: { ...candidate.verdict, passed: true },
+      }),
+      t.job.id,
+      OPERATOR_EDITORIAL_ACCEPTED_STAGE,
+    );
+    assert.throws(
+      () =>
+        applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base),
+      /exact failed/,
+    );
+    t.store.run(
+      "UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?",
+      canonical(candidate),
+      t.job.id,
+      OPERATOR_EDITORIAL_ACCEPTED_STAGE,
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET leaseToken='active',leaseUntil=? WHERE id=?",
+      Date.now() + 1000,
+      t.job.id,
+    );
+    assert.throws(
+      () =>
+        applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base),
+      /stopped original/,
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET leaseToken=NULL,leaseUntil=0 WHERE id=?",
+      t.job.id,
+    );
+    t.store.run(
+      "INSERT INTO studio_steps VALUES(?,'scenes','unapproved','started',NULL)",
+      t.job.id,
+    );
+    assert.throws(
+      () =>
+        applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base),
+      /Unfinished/,
+    );
+    t.store.run(
+      "DELETE FROM studio_steps WHERE jobId=? AND stage='scenes'",
+      t.job.id,
+    );
+    setPilotCampaignState(t.store, "operator", t.campaign.id, "paused");
+    assert.throws(
+      () =>
+        applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base),
+      /funded pilot/,
+    );
+    setPilotCampaignState(t.store, "operator", t.campaign.id, "active");
+    const receipt = applyOperatorEditorialRevisionV2(
+      t.store,
+      "operator",
+      input,
+      t.base,
+    );
+    assert.throws(
+      () =>
+        applyOperatorEditorialRevisionV2(
+          t.store,
+          "operator",
+          { ...input, baseCandidateHash: hash("changed retry") },
+          t.base,
+        ),
+      /immutable/,
+    );
+    assert.throws(
+      () =>
+        applyOperatorEditorialRevisionV2(
+          t.store,
+          "operator",
+          {
+            ...input,
+            approval: { ...input.approval, quote: "A changed approval" },
+          },
+          t.base,
+        ),
+      /immutable/,
+    );
+    assert.deepEqual(
+      readOperatorEditorialRevisionV2(t.store, t.job.id),
+      receipt,
+    );
+    assert.equal(
+      t.store.all(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage=?",
+        t.job.id,
+        OPERATOR_EDITORIAL_REVISION_V2_STAGE,
+      ).length,
+      1,
+    );
+  } finally {
+    t.close();
+  }
+});
+
+test("v1 verdict-only drift after v2 approval stops before any second-revision review", async () => {
+  const t = await fixture();
+  try {
+    const input = await secondRevision(t);
+    applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base);
+    const before = [...t.painter.calls];
+    const candidate = t.read(OPERATOR_EDITORIAL_ACCEPTED_STAGE);
+    candidate.verdict.craftFailures.push(
+      "An unapproved alteration to the original failed review",
+    );
+    t.store.run(
+      "UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?",
+      canonical(candidate),
+      t.job.id,
+      OPERATOR_EDITORIAL_ACCEPTED_STAGE,
+    );
+    assert.throws(
+      () => readOperatorEditorialRevisionV2(t.store, t.job.id),
+      /binding changed/,
+    );
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.deepEqual(t.painter.calls, before);
+    assert.equal(
+      t.store.one(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage='operator_revision_v2_heart'",
+        t.job.id,
+      ),
+      undefined,
+    );
+  } finally {
+    t.close();
+  }
+});
+
+test("failed v2 stays authoritative in the view and recovery without falling back to v1", async () => {
+  const t = await fixture();
+  try {
+    const input = await secondRevision(t);
+    applyOperatorEditorialRevisionV2(t.store, "operator", input, t.base);
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    const accepted = t.read(OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE);
+    assert.equal(accepted.verdict.passed, false);
+    assert.deepEqual(currentReviewedStory(t.store, t.job.id), accepted);
+    assert.equal(studioRecovery(t.store, t.job.id), null);
+    t.store.run(
+      "UPDATE studio_jobs SET status='awaiting_art' WHERE id=?",
+      t.job.id,
+    );
+    assert.equal(
+      studioView(t.store, t.job.projectId)!.preview!.title,
+      input.manuscript.title,
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET status='needs_editor' WHERE id=?",
+      t.job.id,
+    );
+    assert.equal(
+      t.store.one(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage='scenes'",
+        t.job.id,
+      ),
+      undefined,
+    );
+    t.store.run(
+      "UPDATE studio_steps SET state='started',result=NULL WHERE jobId=? AND stage=?",
+      t.job.id,
+      OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
+    );
+    assert.equal(currentReviewedStory(t.store, t.job.id), null);
+    assert.equal(studioRecovery(t.store, t.job.id), null);
   } finally {
     t.close();
   }

@@ -1,4 +1,4 @@
-import { readOperatorEditorialRevision, OPERATOR_EDITORIAL_ACCEPTED_STAGE } from "./operator-editorial-revision.js";
+import { readOperatorEditorialRevision, readOperatorEditorialRevisionV2, currentReviewedStory, OPERATOR_EDITORIAL_ACCEPTED_STAGE, OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE } from "./operator-editorial-revision.js";
 import { DigitalReviewCopyAuthorization } from "./review-copy-authorization.js";
 import { resolveCharacterAppearance } from "./character-appearance.js";
 import { IdentityScopeReview, identityScopePasses } from "./identity-scope.js";
@@ -824,27 +824,7 @@ export function studioView(store: Store, projectId: string): StudioView | null {
   const job = latestStudio(store, projectId);
   if (!job) return null;
   const state: State = JSON.parse(job.state),
-    accepted =
-      studioCached<{ manuscript: Snapshot["manuscript"] }>(
-        store,
-        job.id,
-        OPERATOR_EDITORIAL_ACCEPTED_STAGE,
-      ) ??
-      studioCached<{ manuscript: Snapshot["manuscript"] }>(
-        store,
-        job.id,
-        "accepted_story_editorial_attention_v1",
-      ) ??
-      studioCached<{ manuscript: Snapshot["manuscript"] }>(
-        store,
-        job.id,
-        "accepted_story_evidence_v1",
-      ) ??
-      studioCached<{ manuscript: Snapshot["manuscript"] }>(
-        store,
-        job.id,
-        "accepted_story",
-      );
+    accepted = currentReviewedStory<{ manuscript: Snapshot["manuscript"] }>(store, job.id);
   const heart = state.heart ?? studioCached<Heart>(store, job.id, "heart");
   const baseWorld = studioCached<Snapshot["world"]>(store, job.id, "world");
   const scenes = studioCached<Snapshot["scenes"]>(store, job.id, "scenes");
@@ -1879,6 +1859,15 @@ export async function runStudio(
         OPERATOR_EDITORIAL_ACCEPTED_STAGE,
         operatorRevision,
         async () => judge(operatorRevision.manuscript, "operator_revision_v1"),
+        "local",
+      );
+    }
+    const operatorRevisionV2 = readOperatorEditorialRevisionV2(store, job.id);
+    if (operatorRevisionV2) {
+      accepted = await step(
+        OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
+        operatorRevisionV2,
+        async () => judge(operatorRevisionV2.manuscript, "operator_revision_v2"),
         "local",
       );
     }
