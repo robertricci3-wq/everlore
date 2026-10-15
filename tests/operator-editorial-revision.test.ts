@@ -37,6 +37,12 @@ import {
   PILOT_REVIEW_EXTENSION_STAGES,
 } from "../src/server/pilot/review-slots.js";
 import { authorizeSceneAttempt } from "../src/server/engine/scene-attempt.js";
+import {
+  authorizeSceneRevalidation,
+  readSceneRevalidation,
+  SCENE_REVALIDATION_REVIEW,
+  SCENE_REVALIDATION_ACCEPTED,
+} from "../src/server/pilot/scene-revalidation.js";
 import { REQUEST_RATE_CARD } from "../src/server/engine/request-cost.js";
 import { FAMILY_CONSENT_VERSION } from "../src/shared/journey.js";
 import { Book } from "../src/shared/contracts.js";
@@ -1575,7 +1581,7 @@ test("review slots require exact operator approval, retain immutable policy, and
   const t = await reviewSlotsFixture();
   try {
     const unchanged = canonical(t.store.all("SELECT * FROM pilot_campaigns"));
-    assert(PILOT_REVIEW_EXTENSION_STAGES.every(stage => stage.length <= 64));
+    assert(PILOT_REVIEW_EXTENSION_STAGES.every((stage) => stage.length <= 64));
     assert.throws(() =>
       authorizePilotReviewSlots(t.store, "family", t.slotInput),
     );
@@ -1783,6 +1789,314 @@ test("reconciled base headroom never admits unrelated text and a consumed review
     });
     assert.throws(() => t.reserve(stage), /already been consumed/);
     assert.equal(t.store.all("SELECT * FROM pilot_review_slot_uses").length, 1);
+  } finally {
+    t.close();
+  }
+});
+
+async function revalidationFixture(defect = "none") {
+  const t = await reviewEditionFixture(2500);
+  const story = authorizeStoryReviewEdition(
+    t.store,
+    "operator",
+    t.authorization,
+    t.base,
+  );
+  const original = t.painter.structured.bind(t.painter);
+  let filled = false;
+  t.painter.onStructured = (name) => {
+    t.painter.incorrectArt = name.startsWith("picture_9_");
+    if (name !== "picture_9_requirements_v4_review_3" || filled) return;
+    filled = true;
+    const count = t.store.one<{ n: number }>(
+      "SELECT COUNT(*) n FROM pilot_attempts WHERE creationId=? AND kind='text' AND status!='not_processed'",
+      story.creationId,
+    )!.n;
+    for (let i = count; i < 70; i++) {
+      const attemptId = `synthetic-review-history-${i}`;
+      reservePilotRequest(t.store, {
+        jobId: t.job.id,
+        attemptId,
+        stage: attemptId,
+        inputHash: hash(attemptId),
+        reservation: {
+          version: 1,
+          costConfidence: "estimate",
+          policyHash: t.campaign.policyHash,
+          rateCardVersion: REQUEST_RATE_CARD.version,
+          model: t.campaign.policy.models.text,
+          kind: "text",
+          reservationCents: 1,
+          evidence: { declaredEstimateOnly: 1 },
+        },
+      });
+      markPilotDispatched(t.store, attemptId);
+      settlePilotRequest(t.store, attemptId, {
+        outcome: "completed",
+        usageEstimatedCents: 1,
+        evidenceKind: "provider_usage",
+        evidenceHash: hash(attemptId),
+      });
+    }
+  };
+  t.painter.structured = async (name, schema, instructions, data, images) => {
+    const result = await original(name, schema, instructions, data, images);
+    if (
+      name.startsWith("picture_9_") &&
+      (name.endsWith("_meaning_review_v2") ||
+        name === SCENE_REVALIDATION_REVIEW)
+    ) {
+      const isNew = name === SCENE_REVALIDATION_REVIEW;
+      return schema.parse({
+        ...result,
+        visibleCharacterIds: (data as { expectedCharacterIds: string[] })
+          .expectedCharacterIds,
+        actionReadable: isNew && defect !== "action",
+        identityConsistent: !isNew || defect !== "identity",
+        physicalCoherence: !isNew || defect !== "physical",
+        unexpectedForegroundCharacters:
+          isNew && defect === "extra" ? ["unapproved family member"] : [],
+        protectedContradictions:
+          isNew && defect === "facts"
+            ? [{ nuggetId: "n1", evidence: "Synthetic visible contradiction" }]
+            : [],
+      });
+    }
+    return result;
+  };
+  await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+  assert.equal(studioView(t.store, t.job.projectId)!.status, "needs_attention");
+  const checkpoint = t.store.one<{ id: string; inputHash: string }>(
+    "SELECT id,inputHash FROM studio_checkpoints WHERE jobId=? AND resumedAt IS NULL ORDER BY rowid DESC LIMIT 1",
+    t.job.id,
+  )!;
+  authorizePilotReviewSlots(t.store, "operator", {
+    ...Object.fromEntries(
+      Object.entries(story).filter(([key]) =>
+        [
+          "ownerId",
+          "projectId",
+          "jobId",
+          "creationId",
+          "campaignId",
+          "policyHash",
+          "sourceHash",
+          "manuscriptHash",
+          "profileHash",
+        ].includes(key),
+      ),
+    ),
+    checkpointId: checkpoint.id,
+    checkpointInputHash: checkpoint.inputHash,
+    scope: "remaining_illustration_reviews_only",
+    originalTextLimit: 70,
+    maxAdditionalReviews: 18,
+    amountCents: 2500,
+    reason: "Synthetic remaining-review approval",
+    approval: {
+      quote: "I approve the eighteen specified reviews.",
+      receivedAt: now(),
+    },
+  });
+  resumeStudio(
+    t.store,
+    t.store.one<ProjectRow>(
+      "SELECT * FROM projects WHERE id=?",
+      t.job.projectId,
+    )!,
+    {
+      jobId: t.job.id,
+      callId: checkpoint.id,
+      acknowledgePossibleCharge: false,
+    },
+    t.config,
+  );
+  await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+  assert.equal(studioView(t.store, t.job.projectId)!.status, "needs_editor");
+  const imageHash = t.read("picture_9_attempt_3");
+  const input = {
+    ...Object.fromEntries(
+      Object.entries(story).filter(([key]) =>
+        [
+          "ownerId",
+          "projectId",
+          "jobId",
+          "creationId",
+          "campaignId",
+          "policyHash",
+          "sourceHash",
+          "manuscriptHash",
+          "profileHash",
+        ].includes(key),
+      ),
+    ),
+    imageHash,
+    meaningReviewHash: hash(
+      canonical(t.read("picture_9_attempt_3_meaning_review_v2")),
+    ),
+    requirementsReviewHash: hash(
+      canonical(t.read("picture_9_requirements_v4_review_3")),
+    ),
+    spread: 9,
+    scope: "existing_image_staging_revalidation_only",
+    additionalReviews: 1,
+    additionalImages: 0,
+    amountCents: 2500,
+    instruction:
+      "Keep relatives off-frame; the open seat and welcoming gesture convey the family invitation. Preserve required identities and action.",
+    reason:
+      "One explicitly approved existing-image staging revalidation, with no new render.",
+    approval: {
+      quote:
+        "I approve one check of this existing image with the family off-frame, without a new image.",
+      receivedAt: now(),
+    },
+  };
+  return { ...t, revalidationInput: input };
+}
+
+for (const defect of [
+  "none",
+  "identity",
+  "physical",
+  "facts",
+  "extra",
+  "action",
+])
+  test(`one existing-image revalidation retains every material gate (${defect})`, async () => {
+    const t = await revalidationFixture(defect);
+    try {
+      const retained = t.store.all<{
+        stage: string;
+        inputHash: string;
+        state: string;
+        result: string;
+      }>(
+        "SELECT stage,inputHash,state,result FROM studio_steps WHERE jobId=? AND state='completed' ORDER BY stage",
+        t.job.id,
+      );
+      const beforeImages = t.painter.imagePrompts.length,
+        beforeCalls = t.painter.calls.length;
+      const oldExtension = canonical(
+        t.store.all("SELECT * FROM pilot_review_slot_extensions"),
+      );
+      const receipt = authorizeSceneRevalidation(
+        t.store,
+        "operator",
+        t.revalidationInput,
+      );
+      await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+      assert.equal(t.painter.imagePrompts.length, beforeImages);
+      const newCalls = t.painter.calls.slice(beforeCalls);
+      assert.equal(
+        newCalls.filter((name) => name === SCENE_REVALIDATION_REVIEW).length,
+        1,
+      );
+      assert(
+        newCalls.every(
+          (name) =>
+            name === SCENE_REVALIDATION_REVIEW ||
+            name.startsWith("whole_book_sequence_"),
+        ),
+      );
+      assert.equal(
+        canonical(t.store.all("SELECT * FROM pilot_review_slot_extensions")),
+        oldExtension,
+      );
+      for (const row of retained)
+        assert.deepEqual(
+          t.store.one(
+            "SELECT stage,inputHash,state,result FROM studio_steps WHERE jobId=? AND stage=?",
+            t.job.id,
+            row.stage,
+          ),
+          row,
+        );
+      assert.equal(
+        studioView(t.store, t.job.projectId)!.status,
+        defect === "none" ? "complete" : "needs_editor",
+      );
+      if (defect === "none") {
+        const book = Book.parse(
+          JSON.parse(
+            t.store.one<{ book: string }>("SELECT book FROM editions")!.book,
+          ),
+        );
+        assert.equal(book.spreads[8].artHash, t.revalidationInput.imageHash);
+        const sequence = t.seen.find(
+          (x) => x.name === "whole_book_sequence_review_v2",
+        )!.data as {
+          authorizedStagingBySpread: { spread: number; imageHash: string }[];
+        };
+        assert.equal(
+          sequence.authorizedStagingBySpread.find((x) => x.spread === 9)!
+            .imageHash,
+          t.revalidationInput.imageHash,
+        );
+      } else assert.equal(t.read(SCENE_REVALIDATION_ACCEPTED), null);
+      const count = t.painter.calls.length;
+      assert.deepEqual(
+        authorizeSceneRevalidation(t.store, "operator", t.revalidationInput),
+        receipt,
+      );
+      if (defect !== "none") {
+        t.store.run(
+          "UPDATE studio_jobs SET status='queued' WHERE id=?",
+          t.job.id,
+        );
+        await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+      }
+      assert.equal(t.painter.calls.length, count);
+    } finally {
+      t.close();
+    }
+  });
+
+test("existing-image authorization rejects changed scope and stale evidence before any review", async () => {
+  const t = await revalidationFixture();
+  try {
+    const before = t.painter.calls.length;
+    assert.throws(() =>
+      authorizeSceneRevalidation(t.store, "family", t.revalidationInput),
+    );
+    for (const patch of [
+      { sourceHash: hash("bad") },
+      { imageHash: hash("bad") },
+      { meaningReviewHash: hash("bad") },
+      { requirementsReviewHash: hash("bad") },
+      { campaignId: "other" },
+      { spread: 8 },
+      { additionalImages: 1 },
+      { approval: undefined },
+    ])
+      assert.throws(() =>
+        authorizeSceneRevalidation(t.store, "operator", {
+          ...t.revalidationInput,
+          ...patch,
+        }),
+      );
+    const record = authorizeSceneRevalidation(
+      t.store,
+      "operator",
+      t.revalidationInput,
+    );
+    assert.equal(readSceneRevalidation(t.store, t.job.id)!.id, record.id);
+    assert.throws(() =>
+      authorizeSceneRevalidation(t.store, "operator", {
+        ...t.revalidationInput,
+        instruction: "Different approved instruction for this image.",
+      }),
+    );
+    assert.throws(
+      () => t.store.run("UPDATE pilot_scene_revalidations SET body='{}'"),
+      /immutable/,
+    );
+    t.store.run(
+      "UPDATE projects SET transcript='{}' WHERE id=?",
+      t.job.projectId,
+    );
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.equal(t.painter.calls.length, before);
   } finally {
     t.close();
   }

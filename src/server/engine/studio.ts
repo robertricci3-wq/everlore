@@ -1,3 +1,4 @@
+import { readSceneRevalidation, SCENE_REVALIDATION_NAME, SCENE_REVALIDATION_ACCEPTED } from "../pilot/scene-revalidation.js";
 import { readOperatorEditorialRevision, readOperatorEditorialRevisionV2, currentReviewedStory, OPERATOR_EDITORIAL_ACCEPTED_STAGE, OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE } from "./operator-editorial-revision.js";
 import { readStoryReviewEditionAuthorization } from "./story-review-edition.js";
 import { DigitalReviewCopyAuthorization } from "./review-copy-authorization.js";
@@ -2560,6 +2561,18 @@ export async function runStudio(
     const picture = async (i: number) => {
       const saved = await originalPicture(i);
       if (saved) return saved;
+      if (i === 8) {
+        const revalidation = readSceneRevalidation(store, job.id);
+        if (revalidation) return step(SCENE_REVALIDATION_ACCEPTED,
+          { revalidation, scene: scenes.scenes[i], world, references: refs }, async () => {
+            const review = ProductionImageReview.parse(studioCached(store, job.id, "picture_9_requirements_v4_review_3"));
+            const resolved = await resolveArtEvidence(SCENE_REVALIDATION_NAME, review,
+              { world, scene: scenes.scenes[i] },
+              [store.readAsset(job.projectId, revalidation.imageHash), ...refs.map(r => store.readAsset(job.projectId, r.hash))],
+              { version: 1, scope: "scene_composition_only", spread: 9, authorizationHash: hash(canonical(revalidation)), instruction: revalidation.instruction });
+            return imageGood(resolved) ? revalidation.imageHash : null;
+          }, "local");
+      }
       const raw = studioCached(store, job.id, `scene_attempt_authorization_v1_${i + 1}`);
       if (!raw) return null;
       const authorization = SceneAttemptAuthorization.parse(raw);
@@ -2629,6 +2642,12 @@ export async function runStudio(
       throw new EngineError("Repeated scene files need editorial review.");
     const authorizedStagingBySpread = artHashes.flatMap((imageHash, index) => {
       const spread = index + 1;
+      if (spread === 9 && studioCached(store, job.id, SCENE_REVALIDATION_ACCEPTED) === imageHash) {
+        const revalidation = readSceneRevalidation(store, job.id);
+        if (!revalidation || revalidation.imageHash !== imageHash) throw new EngineError("The selected image revalidation changed.");
+        return [{ version: 1, scope: "scene_composition_only", spread, imageHash,
+          authorizationHash: hash(canonical(revalidation)), instruction: revalidation.instruction }];
+      }
       const raw = studioCached(store, job.id, `scene_attempt_authorization_v1_${spread}`);
       if (!raw || studioCached(store, job.id, `picture_${spread}_authorized_extra_v1_attempt_1`) !== imageHash ||
           ![studioCached(store, job.id, `authorized_picture_v1_${spread}`), studioCached(store, job.id, `authorized_picture_scope_v1_${spread}`)].includes(imageHash)) return [];

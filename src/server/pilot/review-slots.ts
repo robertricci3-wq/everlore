@@ -6,6 +6,10 @@ import { readStoryReviewEditionAuthorization } from "../engine/story-review-edit
 import { SceneAttemptAuthorization } from "../engine/scene-attempt.js";
 import { pilotJobFunding, pilotAccess } from "./service.js";
 import { migratePilot } from "./schema.js";
+import {
+  readSceneRevalidation,
+  SCENE_REVALIDATION_REVIEW,
+} from "./scene-revalidation.js";
 
 export const PILOT_REVIEW_EXTENSION_STAGES = Object.freeze([
   "picture_9_attempt_3_meaning_review_v2",
@@ -293,12 +297,17 @@ export function claimPilotReviewSlot(
     kind: string;
   },
 ) {
-  if (input.kind !== "text") return false;
+  if (input.kind !== "text") return 0;
   const record = readPilotReviewSlots(s, input.jobId);
-  if (!record) return false;
+  if (!record) return 0;
   if (!s.db.isTransaction)
     fail("Review-slot consumption requires an atomic reservation.");
-  stageAllowed(s, record, input.stage);
+  const revalidation = readSceneRevalidation(s, input.jobId);
+  const special = input.stage === SCENE_REVALIDATION_REVIEW;
+  if (special && !revalidation)
+    fail("This existing-image review requires its separate authorization.");
+  if (!special) stageAllowed(s, record, input.stage);
+  const ceiling = revalidation ? 19 : 18;
   if (
     s.one(
       "SELECT stage FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'",
@@ -313,7 +322,13 @@ export function claimPilotReviewSlot(
     s.one<{ n: number }>(
       "SELECT COUNT(*) n FROM pilot_review_slot_uses WHERE jobId=?",
       input.jobId,
-    )!.n >= 18
+    )!.n >= ceiling ||
+    (!special &&
+      s.one<{ n: number }>(
+        "SELECT COUNT(*) n FROM pilot_review_slot_uses WHERE jobId=? AND stage!=?",
+        input.jobId,
+        SCENE_REVALIDATION_REVIEW,
+      )!.n >= 18)
   )
     fail(
       "This review slot has already been consumed; it cannot authorize another request.",
@@ -324,10 +339,10 @@ export function claimPilotReviewSlot(
     input.jobId,
     input.stage,
     input.inputHash,
-    hash(canonical(record)),
+    hash(canonical(special ? revalidation : record)),
     now(),
   );
-  return true;
+  return ceiling;
 }
 
 export function verifyPilotReviewSlotDispatch(
@@ -357,7 +372,10 @@ export function verifyPilotReviewSlotDispatch(
       fail("This new text request has no matching review-slot reservation.");
     return;
   }
-  const record = readPilotReviewSlots(s, attempt.jobId);
+  const special = attempt.stage === SCENE_REVALIDATION_REVIEW;
+  const record = special
+    ? readSceneRevalidation(s, attempt.jobId)
+    : readPilotReviewSlots(s, attempt.jobId);
   if (
     !record ||
     attempt.kind !== "text" ||
@@ -367,5 +385,5 @@ export function verifyPilotReviewSlotDispatch(
     use.authorizationHash !== hash(canonical(record))
   )
     fail("The review-slot reservation no longer matches this request.");
-  stageAllowed(s, record!, attempt.stage);
+  if (!special) stageAllowed(s, record as Record, attempt.stage);
 }

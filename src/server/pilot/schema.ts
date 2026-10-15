@@ -62,5 +62,10 @@ export function migratePilot(db: DatabaseSync) {
       BEGIN SELECT RAISE(ABORT,'Review-slot consumption is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS pilot_retained_review_slot BEFORE DELETE ON pilot_review_slot_uses
       BEGIN SELECT RAISE(ABORT,'Review-slot consumption is append-only'); END;
+    CREATE TABLE IF NOT EXISTS pilot_scene_revalidations(jobId TEXT PRIMARY KEY,requestHash TEXT NOT NULL,body TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS pilot_frozen_scene_revalidation BEFORE UPDATE ON pilot_scene_revalidations
+      BEGIN SELECT RAISE(ABORT,'Scene revalidation authorization is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS pilot_retained_scene_revalidation BEFORE DELETE ON pilot_scene_revalidations
+      BEGIN SELECT RAISE(ABORT,'Scene revalidation authorization is append-only'); END;
   `);
 }

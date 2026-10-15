@@ -814,10 +814,7 @@ function reserveRequest(
       ...input,
       kind: estimate.kind,
     });
-    if (
-      attempts >=
-      campaign.policy.maxRequests[estimate.kind] + (reviewSlot ? 18 : 0)
-    )
+    if (attempts >= campaign.policy.maxRequests[estimate.kind] + reviewSlot)
       throw new AccessError(
         409,
         "This book reached its pilot request limit. Completed work is saved.",
