@@ -1,4 +1,5 @@
 import { DigitalReviewCopyAuthorization } from "./review-copy-authorization.js";
+import { resolveCharacterAppearance } from "./character-appearance.js";
 import { IdentityScopeReview, identityScopePasses } from "./identity-scope.js";
 import { SceneAttemptAuthorization } from "./scene-attempt.js";
 import { worldProblems } from "./scene-validation.js";
@@ -839,6 +840,7 @@ export function studioView(store: Store, projectId: string): StudioView | null {
         "accepted_story",
       );
   const heart = state.heart ?? studioCached<Heart>(store, job.id, "heart");
+  const baseWorld = studioCached<Snapshot["world"]>(store, job.id, "world");
   const scenes = studioCached<Snapshot["scenes"]>(store, job.id, "scenes");
   const progressArt = Array.from({ length: 12 }, (_, i) => ({
     spread: i + 1,
@@ -926,7 +928,9 @@ export function studioView(store: Store, projectId: string): StudioView | null {
     selectedConceptId:
       studioCached<{ id: string }>(store, job.id, "selected_concept")?.id ??
       null,
-    world: studioCached(store, job.id, "world"),
+    world: baseWorld && state.source
+      ? resolveCharacterAppearance(store, job.id, baseWorld, state.source)
+      : baseWorld,
     references: studioCached(store, job.id, "references") ?? [],
     preview,
     kind: job.kind,
@@ -1626,7 +1630,7 @@ export async function runStudio(
       !request.continuity && request.familyVersionId
         ? family(store, project.ownerId, request.familyVersionId)
         : null;
-    const world = await step(
+    const textWorld = await step(
       "world",
       {
         heart,
@@ -1742,7 +1746,7 @@ export async function runStudio(
     };
     let accepted = await step(
       "accepted_story",
-      { heart, plan, world, repair: request.repair ?? null },
+      { heart, plan, world: textWorld, repair: request.repair ?? null },
       async () => {
         let best: Candidate | undefined;
         if (seed) {
@@ -1775,7 +1779,7 @@ export async function runStudio(
               `draft_${i + 1}`,
               StoryManuscript,
               instructions.compose,
-              { heart, plan, world, variation: i + 1 },
+              { heart, plan, world: textWorld, variation: i + 1 },
             );
             const candidate = await judge(manuscript, `draft_${i + 1}`);
             if (!best || notWorse(candidate.verdict, best.verdict))
@@ -1790,7 +1794,7 @@ export async function runStudio(
             {
               heart,
               plan,
-              world,
+              world: textWorld,
               manuscript: best!.manuscript,
               notes: [
                 ...best!.verdict.heartFailures,
@@ -1810,7 +1814,7 @@ export async function runStudio(
     if (!accepted.reviewProtocol) {
       accepted = await step(
         "accepted_story_evidence_v1",
-        { heart, plan, world },
+        { heart, plan, world: textWorld },
         async () => {
           let best: Candidate | undefined;
           const retained = seed
@@ -1893,6 +1897,7 @@ export async function runStudio(
       return true;
     }
     const manuscript = accepted.manuscript;
+    const world = resolveCharacterAppearance(store, job.id, textWorld, state.source!);
     const scenes = await step(
       "scenes",
       { world, manuscript, repair: request.repair ?? null },
