@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, Pause, Play, Square, Upload, ShieldCheck } from "lucide-react";
 import { deleteDraft, loadDraft, saveDraft, type AudioDraft } from "./api.js";
+import { boundedJsonRequest } from "./bounded-request.js";
 
 /** Each turn owns its recovery draft. No silence detection or voice commands. */
 export function VoiceTurnRecorder({
@@ -13,6 +14,7 @@ export function VoiceTurnRecorder({
   initialStream,
   completion,
   onRecordingStarted,
+  onPasteTranscript,
 }: {
   ownerId: string;
   sessionId: string;
@@ -26,6 +28,7 @@ export function VoiceTurnRecorder({
     onComplete: (intent: "save" | "create") => Promise<void>;
   };
   onRecordingStarted?: () => void;
+  onPasteTranscript?: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState<AudioDraft>();
   const [state, setState] = useState<
@@ -44,7 +47,7 @@ export function VoiceTurnRecorder({
     file = useRef<HTMLInputElement>(null);
   const latestDraft = useRef<AudioDraft | undefined>(undefined),
     uploading = useRef(false),
-    finishIntent = useRef<"save" | "create" | null>(null),
+    finishIntent = useRef<"save" | "create" | "paste" | null>(null),
     startedStream = useRef<MediaStream | null>(null);
   const active = state === "recording" || state === "paused";
   useEffect(() => {
@@ -221,7 +224,7 @@ export function VoiceTurnRecorder({
     setState("ready");
     setNotice("Ready to save. Your file has not been sent yet.");
   }
-  async function upload(intent?: "save" | "create") {
+  async function upload(intent?: "save" | "create" | "paste") {
     const savedDraft = latestDraft.current ?? draft;
     if (!savedDraft || uploading.current) return;
     uploading.current = true;
@@ -229,7 +232,7 @@ export function VoiceTurnRecorder({
     setError("");
     try {
       await queue.current;
-      const response = await fetch(
+      await boundedJsonRequest(
         `/api/interviews/${sessionId}/turns/${turnId}/audio`,
         {
           method: "PUT",
@@ -240,11 +243,11 @@ export function VoiceTurnRecorder({
           },
           body: savedDraft.blob,
         },
+        90000,
+        "Saving is taking too long. We could not confirm whether the recording reached your shelf.",
       );
-      const result = await response.json();
-      if (!response.ok)
-        throw new Error(result.error || "The recording could not be saved.");
-      if (intent && completion) await completion.onComplete(intent);
+      if (intent === "paste" && onPasteTranscript) await onPasteTranscript();
+      else if (intent && intent !== "paste" && completion) await completion.onComplete(intent);
       else await onSaved();
       await deleteDraft(turnId).catch(() => undefined);
     } catch (cause) {
@@ -258,7 +261,7 @@ export function VoiceTurnRecorder({
       uploading.current = false;
     }
   }
-  function finish(intent: "save" | "create") {
+  function finish(intent: "save" | "create" | "paste") {
     if (uploading.current) return;
     if (active) {
       if (finishIntent.current || !recording.current || recording.current.state === "inactive") return;
@@ -342,6 +345,7 @@ export function VoiceTurnRecorder({
               Finish this part
             </button>}
           </div>
+          {onPasteTranscript && <button className="text-button" onClick={() => finish("paste")}>Save recording and paste transcript</button>}
         </>
       ) : state === "ready" || state === "saving" ? (
         <>
@@ -361,6 +365,7 @@ export function VoiceTurnRecorder({
             <ShieldCheck size={20} />
             {state === "saving" ? "Saving your words…" : "Save this part"}
           </button>}
+          {onPasteTranscript && <button className="text-button" disabled={state === "saving" || !draft} onClick={() => finish("paste")}>Save recording and paste transcript</button>}
           <p className="small muted">
             Your earlier recordings stay safe. This part is saved separately.
           </p>
@@ -401,6 +406,7 @@ export function VoiceTurnRecorder({
                 ? "Checking saved draft…"
                 : "Start telling"}
           </button>
+          {onPasteTranscript && <button className="text-button" disabled={disabled || state !== "idle"} onClick={() => void onPasteTranscript()}>Paste a transcript</button>}
           <button
             className="text-button"
             disabled={disabled || state !== "idle"}

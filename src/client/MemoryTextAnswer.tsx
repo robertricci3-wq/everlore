@@ -7,12 +7,20 @@ export function MemoryTextAnswer({
   disabled,
   onSave,
   onDraftState,
+  focusRequest = 0,
+  transcriptForRecording = false,
+  confirmedText,
+  onResolved,
 }: {
   ownerId: string;
   turnId: string;
   disabled: boolean;
   onSave: (text: string) => Promise<void>;
   onDraftState: (unsaved: boolean) => void;
+  focusRequest?: number;
+  transcriptForRecording?: boolean;
+  confirmedText?: string;
+  onResolved?: () => void;
 }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
@@ -22,6 +30,17 @@ export function MemoryTextAnswer({
   const [notice, setNotice] = useState("");
   const generation = useRef(0);
   const currentText = useRef("");
+  const input = useRef<HTMLTextAreaElement>(null);
+  const focusedRequest = useRef(0);
+  const editVersion = useRef(0);
+  const submittedText = useRef<string | null>(null);
+  const overCharacters = text.trim().length > 50000;
+  // Match the existing JSON request limit as well as the text schema. Unicode
+  // and JSON escapes can take more than one byte per visible character.
+  const overBytes =
+    new TextEncoder().encode(JSON.stringify({ rawText: text })).byteLength >
+    100 * 1024;
+  const overLimit = overCharacters || overBytes;
   useEffect(() => {
     const epoch = ++generation.current;
     let live = true;
@@ -38,7 +57,11 @@ export function MemoryTextAnswer({
           setText(draft.text);
           setExpanded(draft.text.length > 0);
           currentText.current = draft.text;
-          setNotice("Your unsaved words are still here on this device.");
+          setNotice(
+            confirmedText && draft.text.trim() !== confirmedText
+              ? "Your newer words are still here on this device. They have not replaced the saved transcript."
+              : "Your unsaved words are still here on this device.",
+          );
         }
       })
       .catch(() => {
@@ -56,8 +79,47 @@ export function MemoryTextAnswer({
     };
   }, [ownerId, turnId]);
   useEffect(() => {
+    if (
+      !focusRequest ||
+      focusedRequest.current === focusRequest ||
+      loading ||
+      disabled
+    )
+      return;
+    setExpanded(true);
+    if (expanded) {
+      input.current?.focus();
+      focusedRequest.current = focusRequest;
+    }
+  }, [focusRequest, loading, disabled, expanded]);
+  useEffect(() => {
     onDraftState(loading || saving || text.length > 0);
   }, [loading, saving, text, onDraftState]);
+  useEffect(() => {
+    const submitted = submittedText.current;
+    if (saving || submitted === null || confirmedText !== submitted.trim())
+      return;
+    submittedText.current = null;
+    setError("");
+    if (currentText.current !== submitted) {
+      setNotice(
+        "Your earlier words were saved. Your newer edits are still only on this device.",
+      );
+      return;
+    }
+    const epoch = generation.current;
+    setSaving(true);
+    void deleteTextDraft(ownerId, turnId, submitted)
+      .catch(() => undefined)
+      .then(() => {
+        if (generation.current !== epoch) return;
+        setText("");
+        currentText.current = "";
+        setSaving(false);
+        onDraftState(false);
+        onResolved?.();
+      });
+  }, [confirmedText, saving, ownerId, turnId, onDraftState, onResolved]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       if (text.length || saving) {
@@ -71,27 +133,35 @@ export function MemoryTextAnswer({
 
   function edit(value: string) {
     const epoch = generation.current;
+    const version = ++editVersion.current;
     setText(value);
     currentText.current = value;
     setError("");
+    setNotice("Saving draft on this device…");
     void saveTextDraft({
       ownerId,
       turnId,
       text: value,
       savedAt: Date.now(),
-    }).catch(() => {
-      if (generation.current === epoch)
-        setNotice(
-          "These words could not be kept on this device. Please save them before leaving.",
-        );
-    });
+    })
+      .then(() => {
+        if (generation.current === epoch && editVersion.current === version)
+          setNotice("Draft saved on this device.");
+      })
+      .catch(() => {
+        if (generation.current === epoch && editVersion.current === version)
+          setNotice(
+            "These words could not be kept on this device. Please save them before leaving.",
+          );
+      });
   }
   async function save() {
-    if (disabled || loading || saving || !text.trim()) return;
+    if (disabled || loading || saving || !text.trim() || overLimit) return;
     const value = text,
       epoch = generation.current;
     setSaving(true);
     setError("");
+    submittedText.current = value;
     // Ensure the latest visible answer is queued before the server request. A
     // device-storage failure must not prevent the user from saving to the server.
     await saveTextDraft({
@@ -111,6 +181,7 @@ export function MemoryTextAnswer({
       }
       return;
     }
+    submittedText.current = null;
     let removed = true;
     await deleteTextDraft(ownerId, turnId, value).catch(() => {
       removed = false;
@@ -125,6 +196,7 @@ export function MemoryTextAnswer({
           : "Your words are saved. This browser could not remove its recovery copy.",
       );
       onDraftState(false);
+      onResolved?.();
     }
   }
   async function discard() {
@@ -142,6 +214,7 @@ export function MemoryTextAnswer({
           "The unsaved words were discarded. Saved answers are unchanged.",
         );
         onDraftState(false);
+        onResolved?.();
       }
     } catch {
       if (generation.current === epoch)
@@ -156,7 +229,17 @@ export function MemoryTextAnswer({
       open={expanded}
       onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
-      <summary>Prefer to add the words yourself?</summary>
+      <summary>
+        {transcriptForRecording
+          ? "Transcript for this saved recording"
+          : "Prefer to add the words yourself?"}
+      </summary>
+      {transcriptForRecording && (
+        <p className="small muted">
+          These words will be saved with this recording. The original audio
+          stays unchanged.
+        </p>
+      )}
       {notice && (
         <p className="notice" role="status">
           {notice}
@@ -167,11 +250,20 @@ export function MemoryTextAnswer({
           {error}
         </p>
       )}
+      {overLimit && (
+        <p className="alert" role="alert">
+          {overCharacters
+            ? `This transcript has ${text.trim().length.toLocaleString()} characters. Each part can contain up to 50,000.`
+            : "This transcript is too large to save as one part."}{" "}
+          All your pasted words are still here; split them into smaller parts
+          before saving.
+        </p>
+      )}
       <label htmlFor={`memory-words-${turnId}`}>Your words</label>
       <textarea
         id={`memory-words-${turnId}`}
+        ref={input}
         value={text}
-        maxLength={50000}
         disabled={disabled || loading || saving}
         onChange={(event) => edit(event.target.value)}
         placeholder="Start anywhere. There’s no need to write it like a story."
@@ -182,7 +274,7 @@ export function MemoryTextAnswer({
       </p>
       <button
         className="button secondary"
-        disabled={disabled || loading || saving || !text.trim()}
+        disabled={disabled || loading || saving || !text.trim() || overLimit}
         onClick={() => void save()}
       >
         {loading
