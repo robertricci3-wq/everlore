@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import sharp from "sharp";
 import {
   Store,
   canonical,
@@ -29,6 +30,14 @@ import {
   setPilotCampaignState,
 } from "../src/server/pilot/service.js";
 import { FAMILY_CONSENT_VERSION } from "../src/shared/journey.js";
+import { Book } from "../src/shared/contracts.js";
+import { preparePrint } from "../src/server/commerce/print.js";
+import { authorizeDigitalReviewCopy } from "../src/server/engine/review-copy-authorization.js";
+import {
+  authorizeStoryReviewEdition,
+  readStoryReviewEditionAuthorization,
+  STORY_REVIEW_EDITION_STAGE,
+} from "../src/server/engine/story-review-edition.js";
 import { runStudio, studioView } from "../src/server/engine/studio.js";
 import { requestStudioPause } from "../src/server/engine/budget.js";
 import { resumeStudio, studioRecovery } from "../src/server/engine/recovery.js";
@@ -149,6 +158,40 @@ async function fixture() {
   const painter = new Scripted();
   painter.weak = true;
   const provider = new OpenAIProvider(config, async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (
+      path.endsWith("/images/edits") ||
+      path.endsWith("/images/generations")
+    ) {
+      const form = init!.body;
+      const params =
+        form instanceof FormData
+          ? {
+              prompt: String(form.get("prompt")),
+              size: String(form.get("size")),
+            }
+          : JSON.parse(form as string);
+      const references =
+        form instanceof FormData
+          ? await Promise.all(
+              form
+                .getAll("image[]")
+                .map(async (value) =>
+                  Buffer.from(await (value as Blob).arrayBuffer()),
+                ),
+            )
+          : [];
+      const pixels = await painter.image(
+        params.prompt,
+        references.length ? references : undefined,
+      );
+      const [width, height] = params.size.split("x").map(Number);
+      const png = await sharp(pixels).resize(width, height).png().toBuffer();
+      return Response.json({
+        data: [{ b64_json: png.toString("base64") }],
+        usage: { input_tokens: 200, output_tokens: 80 },
+      });
+    }
     assert(
       new URL(String(url)).pathname.endsWith("/responses"),
       "No audio, images, token counting or external transport in this test",
@@ -165,6 +208,11 @@ async function fixture() {
       z.unknown(),
       body.instructions,
       data,
+      body.input[0].content
+        .filter((c: { type: string }) => c.type === "input_image")
+        .map((c: { image_url: string }) =>
+          Buffer.from(c.image_url.split(",")[1], "base64"),
+        ),
     );
     return Response.json({
       status: "completed",
@@ -1001,6 +1049,415 @@ test("failed v2 stays authoritative in the view and recovery without falling bac
     );
     assert.equal(currentReviewedStory(t.store, t.job.id), null);
     assert.equal(studioRecovery(t.store, t.job.id), null);
+  } finally {
+    t.close();
+  }
+});
+
+async function reviewEditionFixture() {
+  const t = await fixture(),
+    v2 = await secondRevision(t);
+  applyOperatorEditorialRevisionV2(t.store, "operator", v2, t.base);
+  await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+  const candidate = t.read(OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE);
+  assert.equal(candidate.verdict.passed, false);
+  return {
+    ...t,
+    v2,
+    authorization: {
+      ownerId: v2.ownerId,
+      projectId: v2.projectId,
+      jobId: v2.jobId,
+      sourceHash: v2.sourceHash,
+      profileHash: v2.profileHash,
+      manuscriptHash: v2.manuscriptHash,
+      reviewedCandidateHash: hash(canonical(candidate)),
+      scope: "private_illustrated_story_review_only" as const,
+      reason:
+        "Explicit synthetic permission for this exact private review edition; all image checks stay active.",
+      approval: {
+        quote: "Yes—finish the illustrated review edition",
+        receivedAt: now(),
+      },
+    },
+  };
+}
+
+test("exact story-review permission creates one labeled PDF edition without new writing or judging and blocks printing", async (ctx) => {
+  const network = ctx.mock.method(globalThis, "fetch", async () => {
+    throw new Error("No network allowed");
+  });
+  const t = await reviewEditionFixture();
+  try {
+    const steps = t.store.all<{ stage: string }>(
+      "SELECT * FROM studio_steps WHERE jobId=? ORDER BY stage",
+      t.job.id,
+    );
+    const calls = [...t.painter.calls],
+      candidate = t.read(OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE);
+    const source = canonical(t.store.all("SELECT * FROM almanac_sources"));
+    const receipt = authorizeStoryReviewEdition(
+      t.store,
+      "operator",
+      t.authorization,
+      t.base,
+    );
+    assert.deepEqual(
+      readStoryReviewEditionAuthorization(t.store, t.job.id),
+      receipt,
+    );
+    assert.deepEqual(
+      authorizeStoryReviewEdition(t.store, "operator", t.authorization, t.base),
+      receipt,
+    );
+    t.painter.weak = false;
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.equal(
+      studioView(t.store, t.job.projectId)!.status,
+      "complete",
+      JSON.stringify(
+        t.store.one("SELECT stage,error FROM studio_jobs WHERE id=?", t.job.id),
+      ),
+    );
+    const edition = t.store.one<{ id: string; book: string; pdfHash: string }>(
+      "SELECT id,book,pdfHash FROM editions WHERE projectId=?",
+      t.job.projectId,
+    )!;
+    const book = Book.parse(JSON.parse(edition.book));
+    assert.equal(book.spreads.length, 12);
+    assert.equal(book.production!.editorialStatus, "revision_recommended");
+    assert.equal(book.production!.storyReviewEditionException!.id, receipt.id);
+    assert.equal(book.production!.reviewCopyException, undefined);
+    assert.deepEqual(book.production!.manuscript, t.v2.manuscript);
+    assert.deepEqual(
+      book.production!.editorialReview,
+      candidate.editorialReview,
+    );
+    assert.ok(
+      book.reviewFlags.some((x) => x.includes("Illustrated review copy")),
+    );
+    assert.equal(
+      hash(t.store.readAsset(t.job.projectId, edition.pdfHash)),
+      edition.pdfHash,
+    );
+    assert.equal(
+      canonical(t.store.all("SELECT * FROM almanac_sources")),
+      source,
+    );
+    for (const step of steps)
+      assert.deepEqual(
+        t.store.one(
+          "SELECT * FROM studio_steps WHERE jobId=? AND stage=?",
+          t.job.id,
+          step.stage,
+        ),
+        step,
+      );
+    for (const name of calls)
+      assert.equal(t.painter.calls.filter((n) => n === name).length, 1, name);
+    assert.equal(
+      t.painter.calls
+        .slice(calls.length)
+        .filter((n) =>
+          /draft_|refine_|operator_revision_|editorial_attention_/.test(n),
+        ).length,
+      0,
+    );
+    assert.equal(t.store.all("SELECT id FROM studio_jobs").length, 1);
+    assert.equal(
+      t.store.all("SELECT id FROM almanac_creation_requests").length,
+      1,
+    );
+    const print = await preparePrint(t.store, t.job.projectId, edition.id);
+    assert.equal(print.ready, false);
+    assert.ok(
+      print.issues.some((i) => i.includes("not approved for printing")),
+    );
+    const status = t.store.one(
+      "SELECT status,stage FROM studio_jobs WHERE id=?",
+      t.job.id,
+    );
+    assert.deepEqual(
+      authorizeStoryReviewEdition(t.store, "operator", t.authorization, t.base),
+      receipt,
+    );
+    assert.deepEqual(
+      t.store.one("SELECT status,stage FROM studio_jobs WHERE id=?", t.job.id),
+      status,
+    );
+    assert.equal(
+      await runStudio(t.store, t.provider, t.config, { jobId: t.job.id }),
+      false,
+    );
+    assert.equal(t.store.all("SELECT id FROM editions").length, 1);
+    assert.equal(network.mock.callCount(), 0);
+  } finally {
+    t.close();
+  }
+});
+
+test("story-review permission rejects stale scope, unsafe state, protected failures and changed retries", async () => {
+  const t = await reviewEditionFixture();
+  try {
+    const before = canonical(
+      t.store.all("SELECT * FROM studio_steps WHERE jobId=?", t.job.id),
+    );
+    for (const change of [
+      { ownerId: "other" },
+      { sourceHash: hash("stale") },
+      { profileHash: hash("stale") },
+      { manuscriptHash: hash("stale") },
+      { reviewedCandidateHash: hash("stale") },
+      { scope: "digital_feedback_only" },
+    ])
+      assert.throws(() =>
+        authorizeStoryReviewEdition(
+          t.store,
+          "operator",
+          { ...t.authorization, ...change },
+          t.base,
+        ),
+      );
+    assert.throws(() =>
+      authorizeStoryReviewEdition(t.store, "family", t.authorization, t.base),
+    );
+    assert.equal(
+      canonical(
+        t.store.all("SELECT * FROM studio_steps WHERE jobId=?", t.job.id),
+      ),
+      before,
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET leaseToken='active',leaseUntil=? WHERE id=?",
+      Date.now() + 10000,
+      t.job.id,
+    );
+    assert.throws(
+      () =>
+        authorizeStoryReviewEdition(
+          t.store,
+          "operator",
+          t.authorization,
+          t.base,
+        ),
+      /stopped original/,
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET leaseToken=NULL,leaseUntil=0 WHERE id=?",
+      t.job.id,
+    );
+    t.store.run(
+      "INSERT INTO studio_steps VALUES(?,'scenes','unapproved','started',NULL)",
+      t.job.id,
+    );
+    assert.throws(
+      () =>
+        authorizeStoryReviewEdition(
+          t.store,
+          "operator",
+          t.authorization,
+          t.base,
+        ),
+      /Unfinished/,
+    );
+    t.store.run(
+      "DELETE FROM studio_steps WHERE jobId=? AND stage='scenes'",
+      t.job.id,
+    );
+    setPilotCampaignState(t.store, "operator", t.campaign.id, "paused");
+    assert.throws(
+      () =>
+        authorizeStoryReviewEdition(
+          t.store,
+          "operator",
+          t.authorization,
+          t.base,
+        ),
+      /funded pilot/,
+    );
+    setPilotCampaignState(t.store, "operator", t.campaign.id, "active");
+    const candidate = t.read(OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE);
+    const unsafe = structuredClone(candidate);
+    unsafe.editorialReview.ageAppropriate = false;
+    t.store.run(
+      "UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?",
+      canonical(unsafe),
+      t.job.id,
+      OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
+    );
+    assert.throws(
+      () =>
+        authorizeStoryReviewEdition(
+          t.store,
+          "operator",
+          {
+            ...t.authorization,
+            reviewedCandidateHash: hash(canonical(unsafe)),
+          },
+          t.base,
+        ),
+      /Protected source/,
+    );
+    for (const scores of [
+      candidate.editorialReview.scores.slice(1),
+      [
+        candidate.editorialReview.scores[0],
+        ...candidate.editorialReview.scores.slice(0, -1),
+      ],
+    ]) {
+      const malformed = {
+        ...candidate,
+        editorialReview: { ...candidate.editorialReview, scores },
+      };
+      t.store.run(
+        "UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?",
+        canonical(malformed),
+        t.job.id,
+        OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
+      );
+      assert.throws(
+        () =>
+          authorizeStoryReviewEdition(
+            t.store,
+            "operator",
+            {
+              ...t.authorization,
+              reviewedCandidateHash: hash(canonical(malformed)),
+            },
+            t.base,
+          ),
+        /complete, unique score/,
+      );
+    }
+    t.store.run(
+      "UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?",
+      canonical(candidate),
+      t.job.id,
+      OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
+    );
+    authorizeStoryReviewEdition(t.store, "operator", t.authorization, t.base);
+    assert.throws(
+      () =>
+        authorizeStoryReviewEdition(
+          t.store,
+          "operator",
+          { ...t.authorization, reason: "A different permission or new book" },
+          t.base,
+        ),
+      /immutable/,
+    );
+    assert.throws(
+      () =>
+        authorizeDigitalReviewCopy(
+          t.store,
+          t.job.id,
+          "operator",
+          "Attempt to waive artwork too",
+        ),
+      /art-review waiver/,
+    );
+    assert.equal(
+      t.store.all(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage=?",
+        t.job.id,
+        STORY_REVIEW_EDITION_STAGE,
+      ).length,
+      1,
+    );
+  } finally {
+    t.close();
+  }
+});
+
+test("story-review permission cannot bypass failed illustration checks", async () => {
+  const t = await reviewEditionFixture();
+  try {
+    authorizeStoryReviewEdition(t.store, "operator", t.authorization, t.base);
+    t.painter.weak = false;
+    t.painter.incorrectArt = true;
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.equal(
+      studioView(t.store, t.job.projectId)!.status,
+      "needs_editor",
+      JSON.stringify(
+        t.store.one("SELECT stage,error FROM studio_jobs WHERE id=?", t.job.id),
+      ),
+    );
+    assert.equal(t.store.all("SELECT id FROM editions").length, 0);
+    assert.equal(
+      t.store.one(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage='digital_review_copy_authorization_v1'",
+        t.job.id,
+      ),
+      undefined,
+    );
+  } finally {
+    t.close();
+  }
+});
+
+test("story-review permission revalidates source before any scene or image work", async () => {
+  const t = await reviewEditionFixture();
+  try {
+    authorizeStoryReviewEdition(t.store, "operator", t.authorization, t.base);
+    const before = [...t.painter.calls];
+    t.store.run(
+      "UPDATE projects SET transcript=? WHERE id=?",
+      canonical({ ...t.source, rawText: "Changed source" }),
+      t.job.projectId,
+    );
+    assert.throws(
+      () => readStoryReviewEditionAuthorization(t.store, t.job.id),
+      /binding changed/,
+    );
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.deepEqual(t.painter.calls, before);
+    assert.equal(
+      t.store.one(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage='scenes'",
+        t.job.id,
+      ),
+      undefined,
+    );
+  } finally {
+    t.close();
+  }
+});
+
+test("story-review permission cannot bypass the final whole-book image gate", async () => {
+  const t = await reviewEditionFixture();
+  try {
+    authorizeStoryReviewEdition(t.store, "operator", t.authorization, t.base);
+    t.painter.weak = false;
+    t.painter.onStructured = (name) => {
+      if (name === "whole_book_sequence_review_v2") {
+        t.painter.weakImages = true;
+        t.painter.incorrectArt = true;
+      }
+    };
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    const job = t.store.one<{ status: string; stage: string }>(
+      "SELECT status,stage FROM studio_jobs WHERE id=?",
+      t.job.id,
+    )!;
+    assert.equal(job.status, "needs_editor");
+    assert.equal(job.stage, "whole_book_sequence_review_v2");
+    assert.equal(t.store.all("SELECT id FROM editions").length, 0);
+    assert.equal(
+      t.painter.calls.filter((name) => name === "whole_book_sequence_review_v2")
+        .length,
+      1,
+    );
+    assert.throws(
+      () =>
+        authorizeDigitalReviewCopy(
+          t.store,
+          t.job.id,
+          "operator",
+          "Attempt to waive the final image gate",
+        ),
+      /art-review waiver/,
+    );
   } finally {
     t.close();
   }

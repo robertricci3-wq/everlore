@@ -458,6 +458,8 @@ export async function preparePrint(
     );
   if (book.production?.artStatus === "revision_recommended")
     issues.push("Artwork still has unresolved review-copy refinements.");
+  if (book.production?.storyReviewEditionException)
+    issues.push("This privately authorized illustrated story review edition is not approved for printing.");
   if (!product)
     issues.push(
       "A catalogue-verified hardcover product has not been selected.",

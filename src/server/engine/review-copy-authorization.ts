@@ -11,6 +11,7 @@ export const DigitalReviewCopyAuthorization = z.object({
 export function authorizeDigitalReviewCopy(store:Store,jobId:string,actorId:string,reason:string){
  requireOperator(store,actorId);
  return store.transaction(()=>{
+  if(store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage='story_review_edition_authorization_v1'",jobId))throw new EngineError("This story-only authorization cannot be combined with an art-review waiver.");
   const job=store.one<{status:string;stage:string;projectId:string;baseRevision:number}>("SELECT status,stage,projectId,baseRevision FROM studio_jobs WHERE id=?",jobId);
   if(!job||job.status!=="needs_editor"||!["whole_book_sequence_review_v2","whole_book_sequence_meaning_v3"].includes(job.stage))throw new EngineError("A completed sequence review is required.");
   if(store.one<{revision:number}>("SELECT revision FROM projects WHERE id=?",job.projectId)?.revision!==job.baseRevision||store.one("SELECT id FROM studio_jobs WHERE projectId=? AND rowid>(SELECT rowid FROM studio_jobs WHERE id=?)",job.projectId,jobId))throw new EngineError("A newer book exists.");

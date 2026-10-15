@@ -1,4 +1,5 @@
 import { readOperatorEditorialRevision, readOperatorEditorialRevisionV2, currentReviewedStory, OPERATOR_EDITORIAL_ACCEPTED_STAGE, OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE } from "./operator-editorial-revision.js";
+import { readStoryReviewEditionAuthorization } from "./story-review-edition.js";
 import { DigitalReviewCopyAuthorization } from "./review-copy-authorization.js";
 import { resolveCharacterAppearance } from "./character-appearance.js";
 import { IdentityScopeReview, identityScopePasses } from "./identity-scope.js";
@@ -1886,9 +1887,11 @@ export async function runStudio(
       accepted.verdict.craftFailures.push(...findings);
       if (findings.length) accepted.verdict.passed = false;
     }
+    const storyReviewEdition = readStoryReviewEditionAuthorization(store, job.id);
     if (
       !accepted.verdict.passed &&
-      !canAssembleReviewCopy(accepted.verdict, accepted.editorialReview)
+      !canAssembleReviewCopy(accepted.verdict, accepted.editorialReview) &&
+      !storyReviewEdition
     ) {
       pause(
         "needs_editor",
@@ -2630,6 +2633,8 @@ export async function runStudio(
     }
     const reviewCopyRaw = studioCached(store,job.id,"digital_review_copy_authorization_v1");
     const reviewCopyAuthorization = reviewCopyRaw ? DigitalReviewCopyAuthorization.parse(reviewCopyRaw) : null;
+    if (storyReviewEdition && reviewCopyAuthorization)
+      throw new EngineError("This story-only authorization cannot be combined with an art-review waiver.");
     if (reviewCopyAuthorization && (reviewCopyAuthorization.baseRevision !== job.baseRevision ||
         reviewCopyAuthorization.manuscriptHash !== hash(canonical(manuscript)) ||
         canonical(reviewCopyAuthorization.artHashes) !== canonical(artHashes)))
@@ -2660,6 +2665,7 @@ export async function runStudio(
       editorialReview: accepted.editorialReview,
       humanReview: "pending",
       ...(reviewCopyAuthorization ? {reviewCopyException: {id:reviewCopyAuthorization.id,approvedAt:reviewCopyAuthorization.approvedAt,scope:reviewCopyAuthorization.scope}} : {}),
+      ...(storyReviewEdition ? {storyReviewEditionException: {id:storyReviewEdition.id,approvedAt:storyReviewEdition.approvedAt,scope:storyReviewEdition.scope,manuscriptHash:storyReviewEdition.manuscriptHash,reviewedCandidateHash:storyReviewEdition.reviewedCandidateHash}} : {}),
       artStatus: artNotes.length ? "revision_recommended" : "passed",
       artNotes: [...new Set(artNotes)],
       editorialStatus: accepted.verdict.passed

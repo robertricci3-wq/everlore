@@ -141,6 +141,17 @@ function textStage(stage: string, version: RevisionVersion) {
   );
 }
 
+export function isPreVisualOperatorTextStage(stage: string) {
+  return (
+    textStage(stage, 2) ||
+    [
+      OPERATOR_EDITORIAL_REVISION_V2_STAGE,
+      OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE,
+    ].includes(stage) ||
+    /^operator_revision_v2_(?:heart|craft|poetics)$/.test(stage)
+  );
+}
+
 /** Shell-only operator action: one approved supplied manuscript; never authors or dispatches. */
 export function applyOperatorEditorialRevision(
   store: Store,
