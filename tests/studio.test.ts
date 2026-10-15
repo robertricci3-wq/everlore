@@ -1,3 +1,4 @@
+import { STORY_SYSTEM } from "../src/server/engine/studio-prompts.js";
 import { authorizeDigitalReviewCopy } from "../src/server/engine/review-copy-authorization.js";
 import { authorizeSceneAttempt } from "../src/server/engine/scene-attempt.js";
 import { configureAccess } from "../src/server/access.js";
@@ -965,6 +966,201 @@ test("semantic correction forwards correctness findings separately from artistic
   } finally { t.close(); }
 });
 
+for (const defect of ["none", "action", "protected", "extra_cast"] as const)
+  test(`authorized staging reaches the render and semantic review without waiving ${defect}`, async () => {
+    const t = setup(), p = new StudioFake(), original = p.structured.bind(p);
+    const direction = "Keep unnamed relatives off-frame. Show only the two required characters making room, with bags at the edge; no crowd or arrows.";
+    const reviewStage = "picture_8_authorized_extra_v1_attempt_1_staged_meaning_v1";
+    let reviewedStaging: unknown;
+    const sequenceStaging: unknown[] = [];
+    p.onStructured = name => { p.incorrectArt = name.startsWith("picture_8_"); };
+    p.structured = async (name, schema, instructions, data, images) => {
+      const result = await original(name, schema, instructions, data, images);
+      const d = data as { authorizedStaging?: unknown; expectedCharacterIds?: string[] };
+      if (name.startsWith("whole_book_sequence_")) {
+        sequenceStaging.push((data as { authorizedStagingBySpread: unknown }).authorizedStagingBySpread);
+        assert(instructions.includes("no correctness criterion is waived"));
+        if (name === "whole_book_sequence_review_v2") return schema.parse({ ...result, physicalCoherence: 3, correctnessDefects: ["Synthetic contact check"] });
+      }
+      if (name === reviewStage) {
+        reviewedStaging = d.authorizedStaging;
+        assert(instructions.includes("It does not change required character IDs"));
+        assert(instructions.includes("core narrative action"));
+        return schema.parse({
+          ...result,
+          visibleCharacterIds: d.expectedCharacterIds,
+          actionReadable: defect !== "action",
+          unexpectedForegroundCharacters: defect === "extra_cast" ? ["unapproved child"] : [],
+          protectedContradictions: defect === "protected" ? [{ nuggetId: "n1", evidence: "Synthetic visible source contradiction" }] : [],
+        });
+      }
+      assert.equal(d.authorizedStaging, undefined);
+      return result;
+    };
+    try {
+      configureAccess(t.store, false, "owner");
+      queueStudio(t.store, t.project(), { ...consent, autonomous: true }, testConfig);
+      await runStudio(t.store, p, testConfig);
+      const job = t.store.one<{ id: string }>("SELECT id FROM studio_jobs")!;
+      const retained = t.store.all<{ stage: string; inputHash: string; state: string; result: string }>(
+        "SELECT stage,inputHash,state,result FROM studio_steps WHERE jobId=? AND state='completed' ORDER BY stage", job.id,
+      );
+      const approval = authorizeSceneAttempt(t.store, job.id, "owner", 8, direction);
+      const imageCount = p.imagePrompts.length;
+      t.store.run("UPDATE studio_jobs SET status='queued'");
+      await runStudio(t.store, p, testConfig);
+      const expected = { version: 1, scope: "scene_composition_only", spread: 8, authorizationHash: hash(canonical(approval)), instruction: direction };
+      const prompt = p.imagePrompts[imageCount];
+      const rendered = JSON.parse(prompt.slice(prompt.lastIndexOf("\n") + 1)).description;
+      assert.equal(rendered.direction, direction);
+      assert.equal(rendered.authorizedStaging, undefined);
+      assert.deepEqual(reviewedStaging, expected);
+      if (defect === "none") {
+        const imageHash = JSON.parse(t.store.one<{ result: string }>("SELECT result FROM studio_steps WHERE jobId=? AND stage='picture_8_authorized_extra_v1_attempt_1'", job.id)!.result);
+        assert.deepEqual(sequenceStaging, [[{ ...expected, imageHash }], [{ ...expected, imageHash }]]);
+        assert.equal(p.calls.filter(name => name === "whole_book_sequence_review_v2").length, 1);
+        assert.equal(p.calls.filter(name => name === "whole_book_sequence_meaning_v3").length, 1);
+      } else assert.deepEqual(sequenceStaging, []);
+      assert.equal(p.imagePrompts.length, imageCount + 1);
+      assert.equal(p.calls.filter(name => name === reviewStage).length, 1);
+      assert.equal(p.calls.filter(name => name.endsWith("_identity_scope_v1")).length, 0);
+      assert.equal(studioView(t.store, "memory")!.status, defect === "none" ? "complete" : "needs_editor");
+      assert.equal(t.store.all("SELECT * FROM revisions").length, defect === "none" ? 1 : 0);
+      for (const row of retained) assert.deepEqual(t.store.one(
+        "SELECT stage,inputHash,state,result FROM studio_steps WHERE jobId=? AND stage=?", job.id, row.stage,
+      ), row);
+      const calls = p.calls.length;
+      if (defect !== "none") {
+        t.store.run("UPDATE studio_jobs SET status='queued'");
+        await runStudio(t.store, p, testConfig);
+        assert.equal(p.calls.length, calls);
+      }
+    } finally { t.close(); }
+  });
+
+for (const checkpoint of ["staged_completed", "staged_started", "staged_meaning_started", "legacy_completed", "legacy_started", "legacy_meaning_started"])
+  test(`whole-book staging retains correctness and the ${checkpoint} review without replay`, async () => {
+  const t = setup(), p = new StudioFake(), original = p.structured.bind(p);
+  const legacyInputs = new Map<string, unknown>();
+  p.onStructured = name => { p.incorrectArt = name.startsWith("picture_8_"); };
+  p.structured = async (name, schema, instructions, data, images) => {
+    const result = await original(name, schema, instructions, data, images);
+    if (name.endsWith("_staged_meaning_v1")) return schema.parse({ ...result, visibleCharacterIds: (data as { expectedCharacterIds: string[] }).expectedCharacterIds });
+    if (name.startsWith("whole_book_sequence_")) {
+      const staging = (data as { authorizedStagingBySpread: { spread: number; imageHash: string }[] }).authorizedStagingBySpread;
+      const request = JSON.parse(t.store.one<{ request: string }>("SELECT request FROM studio_jobs")!.request);
+      const { authorizedStagingBySpread: _staging, ...legacyData } = data as Record<string, unknown>;
+      assert(_staging);
+      legacyInputs.set(name, {
+        instruction: instructions.slice((request.engineProfile?.storySystem ?? STORY_SYSTEM).length + 2).split(" The authorizedStagingBySpread entries are explicit")[0],
+        data: legacyData, images: images!.map(hash),
+      });
+      assert.equal(images!.length, 12);
+      assert.equal(staging.length, 1);
+      assert.equal(staging[0].spread, 8);
+      assert.equal(staging[0].imageHash, hash(images![7]));
+      if (name === "whole_book_sequence_review_v2") return schema.parse({ ...result, physicalCoherence: 3, correctnessDefects: ["Synthetic contact defect"] });
+      if (name === "whole_book_sequence_meaning_v3") {
+        const finding = result as { spreads: { spread: number; physicalCoherence: boolean }[] };
+        finding.spreads[7].physicalCoherence = false;
+        return schema.parse(finding);
+      }
+    }
+    return result;
+  };
+  try {
+    configureAccess(t.store, false, "owner");
+    queueStudio(t.store, t.project(), { ...consent, autonomous: true }, testConfig);
+    await runStudio(t.store, p, testConfig);
+    const job = t.store.one<{ id: string }>("SELECT id FROM studio_jobs")!;
+    authorizeSceneAttempt(t.store, job.id, "owner", 8, "Keep unnamed relatives off-frame, preserving the two required characters and their action.");
+    t.store.run("UPDATE studio_jobs SET status='queued'");
+    await runStudio(t.store, p, testConfig);
+    assert.equal(studioView(t.store, "memory")!.status, "needs_editor");
+    assert.equal(t.store.all("SELECT * FROM editions").length, 0);
+    if (checkpoint.startsWith("legacy")) {
+      const profile = t.store.one<{ profile: string }>("SELECT profile FROM studio_jobs WHERE id=?", job.id)!.profile;
+      for (const [stage, input] of legacyInputs) {
+        t.store.run("DELETE FROM studio_steps WHERE jobId=? AND stage=?", job.id, `${stage}_staging_input_v1`);
+        t.store.run("UPDATE studio_steps SET inputHash=? WHERE jobId=? AND stage=?", hash(canonical({ input, profile })), job.id, stage);
+      }
+    }
+    if (checkpoint.endsWith("started")) t.store.run("UPDATE studio_steps SET state='started' WHERE jobId=? AND stage=?", job.id,
+      checkpoint.includes("meaning") ? "whole_book_sequence_meaning_v3" : "whole_book_sequence_review_v2");
+    const calls = p.calls.length, retained = t.store.all("SELECT * FROM studio_steps ORDER BY stage");
+    assert.equal(p.calls.filter(name => name === "whole_book_sequence_review_v2").length, 1);
+    assert.equal(p.calls.filter(name => name === "whole_book_sequence_meaning_v3").length, 1);
+    t.store.run("UPDATE studio_jobs SET status='queued'");
+    await runStudio(t.store, p, testConfig);
+    const view = studioView(t.store, "memory")!;
+    assert.equal(view.status, checkpoint.endsWith("started") ? "needs_attention" : "needs_editor");
+    if (checkpoint.endsWith("started")) {
+      assert.match(view.error!, /request may already have completed/);
+      assert.doesNotMatch(view.error!, /input changed/i);
+    }
+    assert.equal(p.calls.length, calls);
+    assert.deepEqual(t.store.all("SELECT * FROM studio_steps ORDER BY stage"), retained);
+  } finally { t.close(); }
+});
+
+for (const checkpoint of ["image", "requirements", "legacy_completed", "legacy_started"] as const)
+  test(`authorized staging preserves the ${checkpoint} checkpoint without replay`, async () => {
+    const t = setup(), p = new StudioFake(), original = p.structured.bind(p);
+    const prefix = "picture_8_authorized_extra_v1";
+    const newStage = `${prefix}_attempt_1_staged_meaning_v1`;
+    let legacyInput: unknown;
+    p.onStructured = name => { p.incorrectArt = name.startsWith("picture_8_"); };
+    p.structured = async (name, schema, instructions, data, images) => {
+      if (name === newStage) {
+        const { authorizedStaging: _staging, ...legacyData } = data as Record<string, unknown>;
+        assert(_staging);
+        legacyInput = {
+          instruction: instructions.slice(instructions.indexOf("Independently inspect the ACTUAL image")).split("\nThe authorizedStaging field")[0],
+          data: legacyData,
+          images: images!.map(hash),
+        };
+      }
+      return original(name, schema, instructions, data, images);
+    };
+    try {
+      configureAccess(t.store, false, "owner");
+      queueStudio(t.store, t.project(), { ...consent, autonomous: true }, testConfig);
+      await runStudio(t.store, p, testConfig);
+      const job = t.store.one<{ id: string; profile: string }>("SELECT id,profile FROM studio_jobs")!;
+      authorizeSceneAttempt(t.store, job.id, "owner", 8, "Keep unnamed family off-frame while preserving the two required characters and their action.");
+      t.store.run("UPDATE studio_jobs SET status='queued'");
+      await runStudio(t.store, p, testConfig);
+      // Reconstruct a retained pre-upgrade boundary, leaving its input bytes
+      // and every other completed paid request intact.
+      t.store.run("DELETE FROM studio_steps WHERE jobId=? AND stage='authorized_picture_v1_8'", job.id);
+      let stage: string;
+      if (checkpoint.startsWith("legacy_")) {
+        stage = `${prefix}_attempt_1_meaning_review_v2`;
+        t.store.run("UPDATE studio_steps SET stage=?,inputHash=?,state=? WHERE jobId=? AND stage=?",
+          stage, hash(canonical({ input: legacyInput, profile: job.profile })),
+          checkpoint === "legacy_completed" ? "completed" : "started", job.id, newStage);
+      } else {
+        stage = checkpoint === "image" ? `${prefix}_attempt_1` : `${prefix}_requirements_v4_review_1`;
+        t.store.run("UPDATE studio_steps SET state='started',result=NULL WHERE jobId=? AND stage=?", job.id, stage);
+      }
+      const retained = t.store.one("SELECT * FROM studio_steps WHERE jobId=? AND stage=?", job.id, stage);
+      const calls = p.calls.length;
+      t.store.run("UPDATE studio_jobs SET status='queued'");
+      await runStudio(t.store, p, testConfig);
+      assert.equal(p.calls.length, calls);
+      assert.deepEqual(t.store.one("SELECT * FROM studio_steps WHERE jobId=? AND stage=?", job.id, stage), retained);
+      const view = studioView(t.store, "memory")!;
+      if (checkpoint === "legacy_completed") {
+        assert.equal(view.status, "needs_editor");
+        assert.equal(t.store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage=?", job.id, newStage), undefined);
+      } else {
+        assert.equal(view.status, "needs_attention");
+        assert.match(view.error!, /request may already have completed/);
+        assert.doesNotMatch(view.error!, /input changed/i);
+      }
+    } finally { t.close(); }
+  });
+
 for (const matches of [false, true]) test(`identity-scope adjudication is bounded and never renders another image (matches=${matches})`, async () => {
   const t = setup(), p = new StudioFake(), original = p.structured.bind(p);
   p.onStructured = name => { p.incorrectArt = name.startsWith("picture_7_"); };
@@ -975,7 +1171,7 @@ for (const matches of [false, true]) test(`identity-scope adjudication is bounde
       return schema.parse({characters:d.expectedCharacters.map(c=>({id:c.id,recognizable:matches,evidence:"Synthetic canonical comparison"})),unexpectedNamedCharacters:[],materialContradictions:[],actionReadable:true,physicalCoherence:true,childAppropriate:true});
     }
     const result = await original(name,schema,instructions,data,images);
-    if (name.includes("authorized_extra") && name.endsWith("_meaning_review_v2")) {
+    if (name.includes("authorized_extra") && (name.endsWith("_meaning_review_v2") || name.endsWith("_staged_meaning_v1"))) {
       const d = data as {expectedCharacterIds:string[]};
       return schema.parse({...result,visibleCharacterIds:d.expectedCharacterIds,unexpectedForegroundCharacters:[],identityConsistent:false,protectedContradictions:[]});
     }

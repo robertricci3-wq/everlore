@@ -309,7 +309,7 @@ export class StudioFake implements Provider {
       };
     else if (name === "whole_book_sequence_meaning_v3")
       result = {spreads: Array.from({length:12},(_,i)=>({spread:i+1,identityConsistent:true,actionReadable:true,physicalCoherence:true,childAppropriate:true,unwantedLettering:false,protectedContradictions:[],evidence:["Synthetic complete-sequence observation"],refinements:[]}))};
-    else if (name.endsWith("_meaning_review_v2"))
+    else if ((name.endsWith("_meaning_review_v2") || name.endsWith("_staged_meaning_v1")))
       result = {
         visibleCharacterIds:
           this.incorrectArt && !this.dismissArtAllegation

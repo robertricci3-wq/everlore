@@ -10,11 +10,18 @@ import {
   type EstimatedRequestReservation,
 } from "../engine/request-cost.js";
 import { migratePilot } from "./schema.js";
+import {
+  claimPilotReviewSlot,
+  verifyPilotReviewSlotDispatch,
+} from "./review-slots.js";
 
 type Kind = "audio" | "text" | "image";
 export class PilotPreDispatchError extends Error {
   readonly preDispatch = true;
-  constructor(message: string, readonly status = 409) {
+  constructor(
+    message: string,
+    readonly status = 409,
+  ) {
     super(message);
     this.name = "PilotPreDispatchError";
   }
@@ -803,7 +810,14 @@ function reserveRequest(
       funding.creationId,
       estimate.kind,
     )!.amount;
-    if (attempts >= campaign.policy.maxRequests[estimate.kind])
+    const reviewSlot = claimPilotReviewSlot(s, {
+      ...input,
+      kind: estimate.kind,
+    });
+    if (
+      attempts >=
+      campaign.policy.maxRequests[estimate.kind] + (reviewSlot ? 18 : 0)
+    )
       throw new AccessError(
         409,
         "This book reached its pilot request limit. Completed work is saved.",
@@ -870,6 +884,7 @@ export function markPilotDispatched(s: Store, attemptId: string) {
         "This saved request is no longer ready to dispatch.",
       );
     active(s, readPilotCampaign(s, row.campaignId));
+    verifyPilotReviewSlotDispatch(s, row);
     s.run(
       "UPDATE pilot_attempts SET status='dispatched',updatedAt=? WHERE id=?",
       now(),

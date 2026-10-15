@@ -2001,11 +2001,19 @@ export async function runStudio(
       async () => ({ version: 1 }),
       "local",
     );
+    type AuthorizedSceneStaging = {
+      version: 1;
+      scope: "scene_composition_only";
+      spread: number;
+      authorizationHash: string;
+      instruction: string;
+    };
     const resolveArtEvidence = async (
       name: string,
       review: z.infer<typeof ProductionImageReview>,
       description: unknown,
       images: Buffer[],
+      staging?: AuthorizedSceneStaging,
     ) => {
       if (imageAccepted(review) || imageReviewCopyEligible(review))
         return review;
@@ -2048,13 +2056,22 @@ export async function runStudio(
       });
       // This reviewer does not see the earlier critic's allegations. It checks
       // narrative meaning and protected particulars rather than echoing nits.
+      // Keep even an unfinished legacy review on its original input/ambiguity
+      // boundary. Only a new authorized review receives the versioned direction.
+      const legacyMeaningStage = `${name}_meaning_review_v2`;
+      const authorizedStaging = staging && !store.one(
+        "SELECT stage FROM studio_steps WHERE jobId=? AND stage=?",
+        job.id, legacyMeaningStage,
+      ) ? staging : undefined;
       const meaning = await editorial(
-        `${name}_meaning_review_v2`,
+        authorizedStaging ? `${name}_staged_meaning_v1` : legacyMeaningStage,
         schema,
-        "Independently inspect the ACTUAL image together with its manuscript words for a children's illustrated REVIEW COPY. Words and pictures share the storytelling: the image need not literally repeat every clause, hand gesture, or temporal beat that the words already communicate. Judge the clear relational action and emotional moment, not exact choreography. IMAGE 1 is the candidate, later images are references, unless imageOrder describes a complete sequence. Identify the required foreground cast by IDs. Anonymous subordinate background partygoers are not extra family members. Check recognizable identities, whether the main intended action and relationship are understandable, material anatomy/contact failures, child suitability, unwanted lettering, and contradictions of relevant protected source nuggets. Only report a protected contradiction if a depicted detail actually contradicts that nugget; a fact assigned to another spread need not appear here. The scene plan is generated creative direction, not testimony: incidental furnishing, clothing layers indoors, natural covered details, equivalent gestures, and plausible imaginative architecture are refinements when they preserve the scene's meaning. Do not mistake exact finger/wing placement, a small cup, a scarf, or unnamed background bustle for loss of the memory's heart. Physical coherence is false for materially broken anatomy/support or unreadable interaction; ordinary occlusion and stylization are not failures. Give specific pixel evidence. No claim of final artistic approval or audience validation. If a material point cannot be verified, mark its boolean false rather than guessing.",
+        "Independently inspect the ACTUAL image together with its manuscript words for a children's illustrated REVIEW COPY. Words and pictures share the storytelling: the image need not literally repeat every clause, hand gesture, or temporal beat that the words already communicate. Judge the clear relational action and emotional moment, not exact choreography. IMAGE 1 is the candidate, later images are references, unless imageOrder describes a complete sequence. Identify the required foreground cast by IDs. Anonymous subordinate background partygoers are not extra family members. Check recognizable identities, whether the main intended action and relationship are understandable, material anatomy/contact failures, child suitability, unwanted lettering, and contradictions of relevant protected source nuggets. Only report a protected contradiction if a depicted detail actually contradicts that nugget; a fact assigned to another spread need not appear here. The scene plan is generated creative direction, not testimony: incidental furnishing, clothing layers indoors, natural covered details, equivalent gestures, and plausible imaginative architecture are refinements when they preserve the scene's meaning. Do not mistake exact finger/wing placement, a small cup, a scarf, or unnamed background bustle for loss of the memory's heart. Physical coherence is false for materially broken anatomy/support or unreadable interaction; ordinary occlusion and stylization are not failures. Give specific pixel evidence. No claim of final artistic approval or audience validation. If a material point cannot be verified, mark its boolean false rather than guessing." +
+          (authorizedStaging ? "\nThe authorizedStaging field is an explicit, scene-specific composition direction for this one attempt. It supersedes conflicting incidental staging in the generated scene plan, including whether unnamed relatives remain off-frame. Judge the visible image against that approved composition together with the manuscript. It does not change required character IDs, canonical identities, the core narrative action or relationship, protected source facts, age suitability, physical coherence, or the prohibition on unwanted lettering. Do not require a crowd or an off-frame relative to be drawn merely because the original plan mentioned one. This is not permission to waive any correctness check: retain a failure for any actual identity, action, safety, lettering, or protected-source contradiction." : ""),
         {
           world,
           expectedCharacterIds,
+          ...(authorizedStaging ? { authorizedStaging } : {}),
           narrativeBrief: desc.scene
             ? {
                 spread: desc.scene.spread,
@@ -2120,6 +2137,7 @@ export async function runStudio(
       description: unknown,
       refs: Buffer[],
       maxAttempts = 3,
+      staging?: AuthorizedSceneStaging,
     ) => {
       let previous: string | undefined,
         defects: string[] = [];
@@ -2168,6 +2186,7 @@ export async function runStudio(
           review,
           description,
           [store.readAsset(job.projectId, picture), ...refs],
+          staging,
         );
         if (imageGood(resolved)) return picture;
         const actionableDefects = [...new Set([...resolved.correctnessDefects, ...resolved.defects])];
@@ -2552,11 +2571,15 @@ export async function runStudio(
           world, scene: scenes.scenes[i],
           direction: authorization.instruction,
           preservation: "Preserve canonical identities, source particulars, scene action and the whole book's painted visual language. The explicit direction clarifies staging, not remembered facts.",
-        }, refs.map(r => store.readAsset(job.projectId, r.hash)), 1), "local");
+        }, refs.map(r => store.readAsset(job.projectId, r.hash)), 1, {
+          version: 1, scope: "scene_composition_only", spread: authorization.spread,
+          authorizationHash: hash(canonical(authorization)), instruction: authorization.instruction,
+        }), "local");
       if (directed) return directed;
       const name = `picture_${i + 1}_authorized_extra_v1`;
       const review = studioCached<z.infer<typeof ProductionImageReview>>(store, job.id, `${name}_requirements_v4_review_1`);
-      const meaning = studioCached<{ visibleCharacterIds: string[]; unexpectedForegroundCharacters: string[]; identityConsistent: boolean; actionReadable: boolean; physicalCoherence: boolean; childAppropriate: boolean; unwantedLettering: boolean; protectedContradictions: unknown[] }>(store, job.id, `${name}_attempt_1_meaning_review_v2`);
+      const meaning = studioCached<{ visibleCharacterIds: string[]; unexpectedForegroundCharacters: string[]; identityConsistent: boolean; actionReadable: boolean; physicalCoherence: boolean; childAppropriate: boolean; unwantedLettering: boolean; protectedContradictions: unknown[] }>(store, job.id, `${name}_attempt_1_staged_meaning_v1`) ??
+        studioCached<{ visibleCharacterIds: string[]; unexpectedForegroundCharacters: string[]; identityConsistent: boolean; actionReadable: boolean; physicalCoherence: boolean; childAppropriate: boolean; unwantedLettering: boolean; protectedContradictions: unknown[] }>(store, job.id, `${name}_attempt_1_meaning_review_v2`);
       const expected = scenes.scenes[i].characterIds;
       // One narrowly scoped adjudication for conflicting identity findings only.
       // It cannot rescue bad action, unsafe content, extra cast or source violations.
@@ -2604,12 +2627,39 @@ export async function runStudio(
     }
     if (new Set(artHashes).size !== 12)
       throw new EngineError("Repeated scene files need editorial review.");
+    const authorizedStagingBySpread = artHashes.flatMap((imageHash, index) => {
+      const spread = index + 1;
+      const raw = studioCached(store, job.id, `scene_attempt_authorization_v1_${spread}`);
+      if (!raw || studioCached(store, job.id, `picture_${spread}_authorized_extra_v1_attempt_1`) !== imageHash ||
+          ![studioCached(store, job.id, `authorized_picture_v1_${spread}`), studioCached(store, job.id, `authorized_picture_scope_v1_${spread}`)].includes(imageHash)) return [];
+      const authorization = SceneAttemptAuthorization.parse(raw);
+      if (authorization.spread !== spread || authorization.baseRevision !== job.baseRevision ||
+          authorization.priorHash !== studioCached(store, job.id, `picture_${spread}_attempt_3`))
+        throw new EngineError("The selected illustration's staging authorization changed.");
+      return [{ version: 1, scope: "scene_composition_only", spread, imageHash,
+        authorizationHash: hash(canonical(authorization)), instruction: authorization.instruction }];
+    });
+    // Preserve both completed and ambiguous legacy whole-book inputs. New
+    // reviews see only directions attached to the actual selected images.
+    const stagingForSequence = async (stage: string) => {
+      const markerStage = `${stage}_staging_input_v1`;
+      const marker = studioCached<typeof authorizedStagingBySpread>(store, job.id, markerStage);
+      if (marker) {
+        if (canonical(marker) !== canonical(authorizedStagingBySpread))
+          throw new EngineError("The selected whole-book staging inputs changed.");
+        return marker;
+      }
+      if (!authorizedStagingBySpread.length || store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage=?", job.id, stage)) return undefined;
+      return step(markerStage, authorizedStagingBySpread, async () => authorizedStagingBySpread, "local");
+    };
+    const sequenceStagingInstruction = " The authorizedStagingBySpread entries are explicit composition directions for their listed selected images only. They supersede conflicting incidental staging in the generated scene plans, including unnamed relatives remaining off-frame. They do not change required character IDs, canonical identities, core narrative action or relationships, protected source facts, age suitability, physical coherence or the prohibition on unwanted lettering. Check all twelve images; no correctness criterion is waived.";
+    const wholeStaging = await stagingForSequence("whole_book_sequence_review_v2");
     // Whole-book inspection gets exactly twelve story images. Reference sheets
     // are deliberately excluded: they are not additional pages of the book.
     const whole = await editorial(
       "whole_book_sequence_review_v2", ProductionImageReview,
-      artReviewInstruction + " This is a complete book, not one candidate image. There are exactly TWELVE images: IMAGE N is spread N. No reference sheets are included. Review every spread and the sequence. An identity sheet or interaction study must never be counted as a story page. Cite spread numbers for each material concern. Distinguish style refinements from actual correctness defects.",
-      { world, scenes, manuscript, imageOrder: "Exactly twelve story spreads, 1 through 12, with no reference sheets." },
+      artReviewInstruction + " This is a complete book, not one candidate image. There are exactly TWELVE images: IMAGE N is spread N. No reference sheets are included. Review every spread and the sequence. An identity sheet or interaction study must never be counted as a story page. Cite spread numbers for each material concern. Distinguish style refinements from actual correctness defects." + (wholeStaging ? sequenceStagingInstruction : ""),
+      { world, scenes, manuscript, imageOrder: "Exactly twelve story spreads, 1 through 12, with no reference sheets.", ...(wholeStaging ? { authorizedStagingBySpread: wholeStaging } : {}) },
       artHashes.map(h => store.readAsset(job.projectId,h)),
     );
     let resolvedWhole: z.infer<typeof ProductionImageReview> & {meaningVerified?:boolean} = whole;
@@ -2621,9 +2671,10 @@ export async function runStudio(
         unwantedLettering:z.boolean(), protectedContradictions:z.array(z.string()),
         evidence:z.array(z.string().min(1)).min(1), refinements:z.array(z.string()),
       })).length(12) });
+      const meaningStaging = await stagingForSequence("whole_book_sequence_meaning_v3");
       const sequence = await editorial("whole_book_sequence_meaning_v3",sequenceSchema,
-        "Inspect ALL TWELVE actual story images, one per numbered spread; IMAGE N is spread N. There are NO character reference sheets in this request. Return exactly one finding per spread 1–12. Compare each image with its own words and scene, and identities across the sequence. Words and pictures share meaning: images need not prove family relationships or every clause already supplied by the words. Anonymous witnesses are not new named relatives. Physical coherence fails for material broken anatomy, support or unreadable interaction, not normal occlusion or stylization. Clothing options and meaningful motifs supplied by canon are allowed. Cite specific visible evidence; preserve uncertainty for materially unverifiable required identities or actions. List genuine contradictions of protected source separately from harmless scene refinements. Inspect every image; do not evaluate only IMAGE 1 or shift numbering. No claim of audience validation or final art approval.",
-        { world, scenes, manuscript, protectedHeart:heart, imageOrder:"IMAGE 1 = spread 1 through IMAGE 12 = spread 12." },
+        "Inspect ALL TWELVE actual story images, one per numbered spread; IMAGE N is spread N. There are NO character reference sheets in this request. Return exactly one finding per spread 1–12. Compare each image with its own words and scene, and identities across the sequence. Words and pictures share meaning: images need not prove family relationships or every clause already supplied by the words. Anonymous witnesses are not new named relatives. Physical coherence fails for material broken anatomy, support or unreadable interaction, not normal occlusion or stylization. Clothing options and meaningful motifs supplied by canon are allowed. Cite specific visible evidence; preserve uncertainty for materially unverifiable required identities or actions. List genuine contradictions of protected source separately from harmless scene refinements. Inspect every image; do not evaluate only IMAGE 1 or shift numbering. No claim of audience validation or final art approval." + (meaningStaging ? sequenceStagingInstruction : ""),
+        { world, scenes, manuscript, protectedHeart:heart, imageOrder:"IMAGE 1 = spread 1 through IMAGE 12 = spread 12.", ...(meaningStaging ? { authorizedStagingBySpread: meaningStaging } : {}) },
         artHashes.map(h=>store.readAsset(job.projectId,h)),
       );
       if (new Set(sequence.spreads.map(x=>x.spread)).size===12 && sequence.spreads.every(x=>

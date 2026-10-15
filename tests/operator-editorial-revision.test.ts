@@ -28,7 +28,16 @@ import {
   issuePilotInvitation,
   redeemPilotInvitation,
   setPilotCampaignState,
+  reservePilotRequest,
+  markPilotDispatched,
+  settlePilotRequest,
 } from "../src/server/pilot/service.js";
+import {
+  authorizePilotReviewSlots,
+  PILOT_REVIEW_EXTENSION_STAGES,
+} from "../src/server/pilot/review-slots.js";
+import { authorizeSceneAttempt } from "../src/server/engine/scene-attempt.js";
+import { REQUEST_RATE_CARD } from "../src/server/engine/request-cost.js";
 import { FAMILY_CONSENT_VERSION } from "../src/shared/journey.js";
 import { Book } from "../src/shared/contracts.js";
 import { preparePrint } from "../src/server/commerce/print.js";
@@ -59,7 +68,7 @@ import {
 } from "./support/studio-fixtures.js";
 
 // Synthetic source and injected transport only; the real request ledger still runs.
-async function fixture() {
+async function fixture(totalCents = 10000) {
   const previous = process.env.EVERLORE_PILOT_WORKER;
   process.env.EVERLORE_PILOT_WORKER = "1";
   const dir = mkdtempSync(join(tmpdir(), "everlore-operator-revision-")),
@@ -83,7 +92,7 @@ async function fixture() {
   };
   const campaign = createPilotCampaign(store, "operator", {
     key: "synthetic-revision",
-    totalCents: 10000,
+    totalCents,
     maxHouseholds: 1,
     policy: makePilotPolicy({
       version: 1,
@@ -1054,8 +1063,8 @@ test("failed v2 stays authoritative in the view and recovery without falling bac
   }
 });
 
-async function reviewEditionFixture() {
-  const t = await fixture(),
+async function reviewEditionFixture(totalCents = 10000) {
+  const t = await fixture(totalCents),
     v2 = await secondRevision(t);
   applyOperatorEditorialRevisionV2(t.store, "operator", v2, t.base);
   await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
@@ -1458,6 +1467,322 @@ test("story-review permission cannot bypass the final whole-book image gate", as
         ),
       /art-review waiver/,
     );
+  } finally {
+    t.close();
+  }
+});
+
+async function reviewSlotsFixture() {
+  const t = await reviewEditionFixture(2500);
+  const story = authorizeStoryReviewEdition(
+    t.store,
+    "operator",
+    t.authorization,
+    t.base,
+  );
+  const scenes = await t.painter.structured("scenes", z.unknown(), "", {});
+  t.store.run(
+    "INSERT INTO studio_steps VALUES(?, 'scenes', ?, 'completed', ?)",
+    t.job.id,
+    hash("synthetic scenes"),
+    canonical(scenes),
+  );
+  const reservation = (kind: "text" | "image" = "text", cents = 1) => ({
+    version: 1 as const,
+    costConfidence: "estimate" as const,
+    policyHash: t.campaign.policyHash,
+    rateCardVersion: REQUEST_RATE_CARD.version,
+    model: t.campaign.policy.models[kind],
+    kind,
+    reservationCents: cents,
+    evidence: { measuredInputBytes: 1, declaredEstimateOnly: 1 },
+  });
+  let serial = 0;
+  const reserve = (
+    stage: string,
+    kind: "text" | "image" = "text",
+    cents = 1,
+    store = t.store,
+  ) =>
+    reservePilotRequest(store, {
+      jobId: t.job.id,
+      attemptId: `slot-test-${++serial}`,
+      stage,
+      inputHash: hash(stage),
+      reservation: reservation(kind, cents),
+    });
+  const complete = (attemptId: string) => {
+    markPilotDispatched(t.store, attemptId);
+    settlePilotRequest(t.store, attemptId, {
+      outcome: "completed",
+      usageEstimatedCents: 1,
+      evidenceHash: hash(attemptId),
+      evidenceKind: "provider_usage",
+    });
+  };
+  const before = t.store.one<{ n: number }>(
+    "SELECT COUNT(*) n FROM pilot_attempts WHERE creationId=? AND kind='text' AND status!='not_processed'",
+    story.creationId,
+  )!.n;
+  for (let i = before; i < 70; i++)
+    complete(reserve(`synthetic_history_${i}`).attempt.id);
+  const checkpointId = "synthetic-review-limit",
+    checkpointInputHash = hash("review checkpoint");
+  t.store.run(
+    "INSERT INTO studio_checkpoints VALUES(?,?,?,?,?,?,?,?,NULL)",
+    checkpointId,
+    t.job.id,
+    PILOT_REVIEW_EXTENSION_STAGES[0],
+    checkpointInputHash,
+    "request_cost",
+    "Synthetic quota pause",
+    null,
+    now(),
+  );
+  t.store.run(
+    "UPDATE studio_jobs SET status='needs_attention',stage=?,leaseToken=NULL,leaseUntil=0 WHERE id=?",
+    PILOT_REVIEW_EXTENSION_STAGES[0],
+    t.job.id,
+  );
+  const slotInput = {
+    ownerId: "family",
+    projectId: t.job.projectId,
+    jobId: t.job.id,
+    creationId: story.creationId,
+    campaignId: t.campaign.id,
+    policyHash: t.campaign.policyHash,
+    sourceHash: t.authorization.sourceHash,
+    manuscriptHash: t.authorization.manuscriptHash,
+    profileHash: t.job.profile,
+    checkpointId,
+    checkpointInputHash,
+    scope: "remaining_illustration_reviews_only" as const,
+    originalTextLimit: 70 as const,
+    maxAdditionalReviews: 18 as const,
+    amountCents: 2500 as const,
+    reason:
+      "Synthetic explicit permission for eighteen named reviews within unchanged funding.",
+    approval: {
+      quote:
+        "I approve these eighteen additional reviews only, with the same amount and image limits.",
+      receivedAt: now(),
+    },
+  };
+  return { ...t, slotInput, reserve, complete, reservation };
+}
+
+test("review slots require exact operator approval, retain immutable policy, and never resume automatically", async () => {
+  const t = await reviewSlotsFixture();
+  try {
+    const unchanged = canonical(t.store.all("SELECT * FROM pilot_campaigns"));
+    assert(PILOT_REVIEW_EXTENSION_STAGES.every(stage => stage.length <= 64));
+    assert.throws(() =>
+      authorizePilotReviewSlots(t.store, "family", t.slotInput),
+    );
+    for (const patch of [
+      { sourceHash: hash("wrong") },
+      { manuscriptHash: hash("wrong") },
+      { profileHash: hash("wrong") },
+      { ownerId: "other" },
+      { checkpointInputHash: hash("wrong") },
+      { maxAdditionalReviews: 19 },
+      { amountCents: 2501 },
+      { approval: undefined },
+    ])
+      assert.throws(() =>
+        authorizePilotReviewSlots(t.store, "operator", {
+          ...t.slotInput,
+          ...patch,
+        }),
+      );
+    t.store.run(
+      "UPDATE studio_jobs SET leaseToken='busy',leaseUntil=? WHERE id=?",
+      Date.now() + 1000,
+      t.job.id,
+    );
+    assert.throws(() =>
+      authorizePilotReviewSlots(t.store, "operator", t.slotInput),
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET leaseToken=NULL,leaseUntil=0 WHERE id=?",
+      t.job.id,
+    );
+    const receipt = authorizePilotReviewSlots(t.store, "operator", t.slotInput);
+    assert.deepEqual(
+      authorizePilotReviewSlots(t.store, "operator", t.slotInput),
+      receipt,
+    );
+    assert.throws(() =>
+      authorizePilotReviewSlots(t.store, "operator", {
+        ...t.slotInput,
+        reason: "Different approval request",
+      }),
+    );
+    assert.equal(
+      t.store.one<{ status: string }>(
+        "SELECT status FROM studio_jobs WHERE id=?",
+        t.job.id,
+      )!.status,
+      "needs_attention",
+    );
+    assert.equal(
+      canonical(t.store.all("SELECT * FROM pilot_campaigns")),
+      unchanged,
+    );
+    assert.throws(
+      () => t.store.run("UPDATE pilot_review_slot_extensions SET body='{}'"),
+      /immutable/,
+    );
+    assert.throws(
+      () => t.store.run("DELETE FROM pilot_review_slot_extensions"),
+      /append-only/,
+    );
+    assert.equal(t.store.all("SELECT * FROM pilot_review_slot_uses").length, 0);
+  } finally {
+    t.close();
+  }
+});
+
+test("exactly eighteen named review slots share existing money, preserve image caps and require separate scene-eight approval", async () => {
+  const t = await reviewSlotsFixture();
+  try {
+    t.store.run("UPDATE studio_jobs SET status='queued' WHERE id=?", t.job.id);
+    assert.throws(
+      () => t.reserve(PILOT_REVIEW_EXTENSION_STAGES[0]),
+      /request limit/,
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET status='needs_attention' WHERE id=?",
+      t.job.id,
+    );
+    authorizePilotReviewSlots(t.store, "operator", t.slotInput);
+    t.store.run("UPDATE studio_jobs SET status='queued' WHERE id=?", t.job.id);
+    for (const stage of [
+      "draft_4",
+      "picture_9_attempt_4_meaning_review_v2",
+      "picture_8_authorized_extra_v1_attempt_1_meaning_review_v2",
+    ])
+      assert.throws(() => t.reserve(stage), /eighteen named/);
+    assert.throws(
+      () => t.reserve(PILOT_REVIEW_EXTENSION_STAGES[0], "text", 2500),
+      /allowance/,
+    );
+    assert.equal(t.store.all("SELECT * FROM pilot_review_slot_uses").length, 0);
+    assert.throws(
+      () => t.reserve("picture_8_authorized_extra_v1_requirements_v4_review_1"),
+      /separate exact/,
+    );
+    t.store.run(
+      "INSERT INTO studio_steps VALUES(?, 'accepted_picture_meaning_v2_8', ?, 'completed', 'null')",
+      t.job.id,
+      hash("exhausted"),
+    );
+    t.store.run(
+      "INSERT INTO studio_steps VALUES(?, 'picture_8_attempt_3', ?, 'completed', ?)",
+      t.job.id,
+      hash("third"),
+      canonical(hash("synthetic picture")),
+    );
+    t.store.run(
+      "UPDATE studio_jobs SET status='needs_editor' WHERE id=?",
+      t.job.id,
+    );
+    authorizeSceneAttempt(
+      t.store,
+      t.job.id,
+      "operator",
+      8,
+      "A separately authorized synthetic scene attempt with stable identities.",
+    );
+    t.store.run("UPDATE studio_jobs SET status='queued' WHERE id=?", t.job.id);
+    for (const stage of PILOT_REVIEW_EXTENSION_STAGES)
+      t.complete(t.reserve(stage).attempt.id);
+    assert.equal(
+      t.store.all("SELECT * FROM pilot_review_slot_uses").length,
+      18,
+    );
+    assert.equal(
+      t.store.one<{ n: number }>(
+        "SELECT COUNT(*) n FROM pilot_attempts WHERE kind='text'",
+      )!.n,
+      88,
+    );
+    assert.throws(
+      () => t.reserve(PILOT_REVIEW_EXTENSION_STAGES[0]),
+      /saved request/,
+    );
+    assert.throws(() => t.reserve("another_review"), /eighteen named/);
+    for (let i = 0; i < 42; i++)
+      t.complete(t.reserve(`synthetic_image_${i}`, "image").attempt.id);
+    assert.throws(
+      () => t.reserve("synthetic_image_43", "image"),
+      /request limit/,
+    );
+    assert.equal(t.campaign.policy.maxRequests.image, 42);
+    assert.equal(t.campaign.policy.maxRequests.text, 70);
+  } finally {
+    t.close();
+  }
+});
+
+test("review-slot reservation is atomic across connections and rechecks source before dispatch", async () => {
+  const t = await reviewSlotsFixture();
+  let second: Store | undefined;
+  try {
+    authorizePilotReviewSlots(t.store, "operator", t.slotInput);
+    t.store.run("UPDATE studio_jobs SET status='queued' WHERE id=?", t.job.id);
+    second = new Store(t.store.dir);
+    const stage = PILOT_REVIEW_EXTENSION_STAGES[0],
+      attempt = t.reserve(stage).attempt;
+    assert.deepEqual(
+      reservePilotRequest(second, {
+        jobId: t.job.id,
+        attemptId: attempt.id,
+        stage,
+        inputHash: hash(stage),
+        reservation: t.reservation(),
+      }),
+      { isNew: false, attempt },
+    );
+    assert.throws(() => t.reserve(stage, "text", 1, second), /saved request/);
+    assert.equal(t.store.all("SELECT * FROM pilot_review_slot_uses").length, 1);
+    t.store.run(
+      "UPDATE projects SET transcript='{}' WHERE id=?",
+      t.job.projectId,
+    );
+    assert.throws(() => markPilotDispatched(t.store, attempt.id));
+    assert.equal(
+      t.store.one<{ status: string }>(
+        "SELECT status FROM pilot_attempts WHERE id=?",
+        attempt.id,
+      )!.status,
+      "reserved",
+    );
+  } finally {
+    second?.close();
+    t.close();
+  }
+});
+
+test("reconciled base headroom never admits unrelated text and a consumed review slot never reopens", async () => {
+  const t = await reviewSlotsFixture();
+  try {
+    authorizePilotReviewSlots(t.store, "operator", t.slotInput);
+    t.store.run("UPDATE studio_jobs SET status='queued' WHERE id=?", t.job.id);
+    // Model an independently verified no-processing reconciliation of an old base request.
+    t.store.run(
+      "UPDATE pilot_attempts SET status='not_processed' WHERE stage='synthetic_history_69'",
+    );
+    assert.throws(() => t.reserve("draft_4"), /eighteen named/);
+    const stage = PILOT_REVIEW_EXTENSION_STAGES[0],
+      attempt = t.reserve(stage).attempt;
+    settlePilotRequest(t.store, attempt.id, {
+      outcome: "not_processed",
+      evidenceHash: hash("verified no dispatch"),
+      evidenceKind: "local_pre_dispatch",
+    });
+    assert.throws(() => t.reserve(stage), /already been consumed/);
+    assert.equal(t.store.all("SELECT * FROM pilot_review_slot_uses").length, 1);
   } finally {
     t.close();
   }

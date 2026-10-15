@@ -47,5 +47,20 @@ export function migratePilot(db: DatabaseSync) {
     CREATE TABLE IF NOT EXISTS pilot_settlements(
       id TEXT PRIMARY KEY,attemptId TEXT NOT NULL,actorId TEXT,body TEXT NOT NULL,createdAt TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS pilot_review_slot_extensions(
+      jobId TEXT PRIMARY KEY,requestHash TEXT NOT NULL,body TEXT NOT NULL
+    );
+    CREATE TRIGGER IF NOT EXISTS pilot_frozen_review_extension BEFORE UPDATE ON pilot_review_slot_extensions
+      BEGIN SELECT RAISE(ABORT,'Review-slot authorization is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS pilot_retained_review_extension BEFORE DELETE ON pilot_review_slot_extensions
+      BEGIN SELECT RAISE(ABORT,'Review-slot authorization is append-only'); END;
+    CREATE TABLE IF NOT EXISTS pilot_review_slot_uses(
+      attemptId TEXT PRIMARY KEY,jobId TEXT NOT NULL,stage TEXT NOT NULL,inputHash TEXT NOT NULL,
+      authorizationHash TEXT NOT NULL,createdAt TEXT NOT NULL,UNIQUE(jobId,stage)
+    );
+    CREATE TRIGGER IF NOT EXISTS pilot_frozen_review_slot BEFORE UPDATE ON pilot_review_slot_uses
+      BEGIN SELECT RAISE(ABORT,'Review-slot consumption is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS pilot_retained_review_slot BEFORE DELETE ON pilot_review_slot_uses
+      BEGIN SELECT RAISE(ABORT,'Review-slot consumption is append-only'); END;
   `);
 }
