@@ -162,7 +162,7 @@ export function studioRecovery(store: Store, jobId: string) {
     )
   ) {
     const candidate = store.one<{ result: string }>(
-      "SELECT result FROM studio_steps WHERE jobId=? AND stage='accepted_story_editorial_attention_v1' AND state='completed'",
+      "SELECT result FROM studio_steps WHERE jobId=? AND stage IN ('accepted_story_operator_revision_v1','accepted_story_editorial_attention_v1') AND state='completed' ORDER BY CASE stage WHEN 'accepted_story_operator_revision_v1' THEN 0 ELSE 1 END LIMIT 1",
       jobId,
     );
     const saved = store.one<{ state: string }>(
@@ -255,8 +255,12 @@ export function studioRecovery(store: Store, jobId: string) {
       const read = (stage: string) => JSON.parse(store.one<{ result: string }>(
         "SELECT result FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'", jobId, stage,
       )!.result);
+      const readOptional = (stage: string) => {
+        const row = store.one<{ result: string }>("SELECT result FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'", jobId, stage);
+        return row ? JSON.parse(row.result) : null;
+      };
       sceneReferenceRepair = worldProblems(VisualWorld.parse(read("world")),
-        StoryManuscript.parse(read("accepted_story").manuscript), ScenePlan.parse(read("scenes"))).length === 0;
+        StoryManuscript.parse((readOptional("accepted_story_operator_revision_v1") ?? readOptional("accepted_story_editorial_attention_v1") ?? read("accepted_story")).manuscript), ScenePlan.parse(read("scenes"))).length === 0;
     } catch { /* Invalid or incomplete evidence cannot authorize recovery. */ }
   }
   const continueIndependentArt = job.status === "needs_editor" &&

@@ -14,7 +14,7 @@ export function authorizeDigitalReviewCopy(store:Store,jobId:string,actorId:stri
   if(!job||job.status!=="needs_editor"||!["whole_book_sequence_review_v2","whole_book_sequence_meaning_v3"].includes(job.stage))throw new EngineError("A completed sequence review is required.");
   if(store.one<{revision:number}>("SELECT revision FROM projects WHERE id=?",job.projectId)?.revision!==job.baseRevision||store.one("SELECT id FROM studio_jobs WHERE projectId=? AND rowid>(SELECT rowid FROM studio_jobs WHERE id=?)",job.projectId,jobId))throw new EngineError("A newer book exists.");
   const read=(stage:string)=>{const r=store.one<{result:string}>("SELECT result FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'",jobId,stage);return r?JSON.parse(r.result):null;};
-  const accepted=read("accepted_story");
+  const accepted=read("accepted_story_operator_revision_v1")??read("accepted_story_editorial_attention_v1")??read("accepted_story_evidence_v1")??read("accepted_story");
   if(!accepted?.verdict||accepted.verdict.heartFailures.length||accepted.verdict.mechanical.length)throw new EngineError("Protected story and structure must pass.");
   const artHashes=Array.from({length:12},(_,i)=>read(`accepted_picture_meaning_v2_${i+1}`)??read(`authorized_picture_v1_${i+1}`)??read(`authorized_picture_scope_v1_${i+1}`));
   if(artHashes.some(h=>typeof h!=="string")||new Set(artHashes).size!==12)throw new EngineError("Twelve distinct accepted illustrations are required.");

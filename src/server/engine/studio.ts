@@ -1,3 +1,4 @@
+import { readOperatorEditorialRevision, OPERATOR_EDITORIAL_ACCEPTED_STAGE } from "./operator-editorial-revision.js";
 import { DigitalReviewCopyAuthorization } from "./review-copy-authorization.js";
 import { resolveCharacterAppearance } from "./character-appearance.js";
 import { IdentityScopeReview, identityScopePasses } from "./identity-scope.js";
@@ -824,6 +825,11 @@ export function studioView(store: Store, projectId: string): StudioView | null {
   if (!job) return null;
   const state: State = JSON.parse(job.state),
     accepted =
+      studioCached<{ manuscript: Snapshot["manuscript"] }>(
+        store,
+        job.id,
+        OPERATOR_EDITORIAL_ACCEPTED_STAGE,
+      ) ??
       studioCached<{ manuscript: Snapshot["manuscript"] }>(
         store,
         job.id,
@@ -1864,6 +1870,15 @@ export async function runStudio(
             StoryManuscript.parse(editorialInput.manuscript),
             "editorial_attention_v1",
           ),
+        "local",
+      );
+    }
+    const operatorRevision = readOperatorEditorialRevision(store, job.id);
+    if (operatorRevision) {
+      accepted = await step(
+        OPERATOR_EDITORIAL_ACCEPTED_STAGE,
+        operatorRevision,
+        async () => judge(operatorRevision.manuscript, "operator_revision_v1"),
         "local",
       );
     }
