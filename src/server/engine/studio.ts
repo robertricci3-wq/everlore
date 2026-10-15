@@ -1,4 +1,5 @@
 import { readSceneRevalidation, SCENE_REVALIDATION_NAME, SCENE_REVALIDATION_ACCEPTED } from "../pilot/scene-revalidation.js";
+import { readPortraitClassification, PORTRAIT_CLASSIFICATION_ACCEPTED } from "../pilot/portrait-classification.js";
 import { readOperatorEditorialRevision, readOperatorEditorialRevisionV2, currentReviewedStory, OPERATOR_EDITORIAL_ACCEPTED_STAGE, OPERATOR_EDITORIAL_ACCEPTED_V2_STAGE } from "./operator-editorial-revision.js";
 import { readStoryReviewEditionAuthorization } from "./story-review-edition.js";
 import { DigitalReviewCopyAuthorization } from "./review-copy-authorization.js";
@@ -2561,6 +2562,14 @@ export async function runStudio(
     const picture = async (i: number) => {
       const saved = await originalPicture(i);
       if (saved) return saved;
+      if (i === 11) {
+        const classification = readPortraitClassification(store, job.id);
+        if (classification) {
+          artNotes.push("A retained portrait identity was classified separately from foreground presence; original image reviews remain saved.");
+          return step(PORTRAIT_CLASSIFICATION_ACCEPTED, classification.record,
+            async () => imageGood(classification.resolved) ? classification.record.imageHash : null, "local");
+        }
+      }
       if (i === 8) {
         const revalidation = readSceneRevalidation(store, job.id);
         if (revalidation) return step(SCENE_REVALIDATION_ACCEPTED,

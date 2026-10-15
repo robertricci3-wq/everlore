@@ -1,5 +1,6 @@
 import { worldProblems } from "./scene-validation.js";
 import { currentReviewedStory } from "./operator-editorial-revision.js";
+import { readPortraitClassification, PORTRAIT_CLASSIFICATION_ACCEPTED } from "../pilot/portrait-classification.js";
 import { requireAllocationIncrease } from "../access.js";
 import { HeartContract, StoryManuscript, VisualWorld, ScenePlan, type Snapshot } from "../../shared/studio.js";
 import { Transcript } from "../../shared/contracts.js";
@@ -268,7 +269,13 @@ export function studioRecovery(store: Store, jobId: string) {
   const identityScopeRepair = job.status === "needs_editor" && !!store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage LIKE 'authorized_picture_v1_%' AND state='completed' AND result='null' AND NOT EXISTS(SELECT 1 FROM studio_steps p WHERE p.jobId=studio_steps.jobId AND p.stage=replace(studio_steps.stage,'authorized_picture_v1_','authorized_picture_scope_v1_'))", jobId);
   const sequenceInputRepair = job.status === "needs_editor" && ["whole_book_review","whole_book_meaning_review_v2"].includes(job.stage) && !store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage=?",jobId,"whole_book_sequence_review_v2");
   const digitalReviewCopyRepair = job.status === "needs_editor" && !!store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage=? AND state='completed'",jobId,"digital_review_copy_authorization_v1");
+  let portraitClassificationRepair = false;
+  if (job.status === "needs_editor" && !store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage=?", jobId, PORTRAIT_CLASSIFICATION_ACCEPTED)) {
+    try { portraitClassificationRepair = !!readPortraitClassification(store, jobId); }
+    catch { /* Stale or incomplete evidence cannot authorize recovery. */ }
+  }
   const localRepair =
+    portraitClassificationRepair ||
     digitalReviewCopyRepair ||
     sequenceInputRepair ||
     identityScopeRepair ||
@@ -307,6 +314,7 @@ export function studioRecovery(store: Store, jobId: string) {
     evidenceRepair,
     editorialRepair,
     localRepair,
+    portraitClassificationRepair,
     sceneReferenceRepair,
     continueIndependentArt,
     authorizedSceneAttempt,

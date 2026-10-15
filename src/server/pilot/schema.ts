@@ -67,5 +67,10 @@ export function migratePilot(db: DatabaseSync) {
       BEGIN SELECT RAISE(ABORT,'Scene revalidation authorization is immutable'); END;
     CREATE TRIGGER IF NOT EXISTS pilot_retained_scene_revalidation BEFORE DELETE ON pilot_scene_revalidations
       BEGIN SELECT RAISE(ABORT,'Scene revalidation authorization is append-only'); END;
+    CREATE TABLE IF NOT EXISTS pilot_portrait_classifications(jobId TEXT PRIMARY KEY,requestHash TEXT NOT NULL,body TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS pilot_frozen_portrait_classification BEFORE UPDATE ON pilot_portrait_classifications
+      BEGIN SELECT RAISE(ABORT,'Portrait classification evidence is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS pilot_retained_portrait_classification BEFORE DELETE ON pilot_portrait_classifications
+      BEGIN SELECT RAISE(ABORT,'Portrait classification evidence is append-only'); END;
   `);
 }

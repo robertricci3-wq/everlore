@@ -44,6 +44,7 @@ import {
   SCENE_REVALIDATION_ACCEPTED,
 } from "../src/server/pilot/scene-revalidation.js";
 import { REQUEST_RATE_CARD } from "../src/server/engine/request-cost.js";
+import { applyPortraitClassification, readPortraitClassification, portraitClassificationCanonHash, PORTRAIT_CLASSIFICATION_ACCEPTED } from "../src/server/pilot/portrait-classification.js";
 import { FAMILY_CONSENT_VERSION } from "../src/shared/journey.js";
 import { Book } from "../src/shared/contracts.js";
 import { preparePrint } from "../src/server/commerce/print.js";
@@ -1794,7 +1795,7 @@ test("reconciled base headroom never admits unrelated text and a consumed review
   }
 });
 
-async function revalidationFixture(defect = "none") {
+async function revalidationFixture(defect = "none", portrait = false) {
   const t = await reviewEditionFixture(2500);
   const story = authorizeStoryReviewEdition(
     t.store,
@@ -1805,7 +1806,7 @@ async function revalidationFixture(defect = "none") {
   const original = t.painter.structured.bind(t.painter);
   let filled = false;
   t.painter.onStructured = (name) => {
-    t.painter.incorrectArt = name.startsWith("picture_9_");
+    t.painter.incorrectArt = name.startsWith("picture_9_") || (portrait && name.startsWith("picture_12_"));
     if (name !== "picture_9_requirements_v4_review_3" || filled) return;
     filled = true;
     const count = t.store.one<{ n: number }>(
@@ -1841,6 +1842,20 @@ async function revalidationFixture(defect = "none") {
   };
   t.painter.structured = async (name, schema, instructions, data, images) => {
     const result = await original(name, schema, instructions, data, images);
+    if (portrait && name === "scenes") {
+      const plan = structuredClone(result) as { scenes: { action: string; characterIds: string[]; physicalInteractions: string[] }[] };
+      plan.scenes[11].action = "Nell sits quietly by the coat.";
+      plan.scenes[11].physicalInteractions.push("Any visual trace of Ada remains emblematic and clearly non-literal—such as a tiny memory medallion or softened compositional echo.");
+      plan.scenes[11].characterIds = ["nell", "ada"];
+      return schema.parse(plan);
+    }
+    if (portrait && name.startsWith("picture_12_") && name.includes("requirements_v4"))
+      return schema.parse({ ...result, identity: 4, style: 3, actionReadability: 3, physicalCoherence: 3 });
+    if (portrait && name.startsWith("picture_12_") && name.endsWith("_meaning_review_v2"))
+      return schema.parse({ ...result, visibleCharacterIds: ["nell"], identityConsistent: true,
+        actionReadable: true, physicalCoherence: true, childAppropriate: true, unwantedLettering: false,
+        unexpectedForegroundCharacters: [], protectedContradictions: [],
+        evidence: ["Ada does not appear as a literal figure in the room; instead, a small oval framed portrait of a beaver in a sage apron sits on the table, matching the brief that she be present only as a gentle design memory."] });
     if (
       name.startsWith("picture_9_") &&
       (name.endsWith("_meaning_review_v2") ||
@@ -2100,4 +2115,143 @@ test("existing-image authorization rejects changed scope and stale evidence befo
   } finally {
     t.close();
   }
+});
+
+async function portraitFixture() {
+  const t = await revalidationFixture("none", true);
+  const scene = t.read("scenes").scenes[11];
+  const input = {
+    ...Object.fromEntries(Object.entries(t.revalidationInput).filter(([key]) => [
+      "ownerId", "projectId", "jobId", "creationId", "campaignId", "policyHash",
+      "sourceHash", "manuscriptHash", "profileHash",
+    ].includes(key))),
+    sceneHash: hash(canonical(scene)), canonHash: portraitClassificationCanonHash(t.store, t.job.id),
+    imageHash: t.read("picture_12_attempt_2"),
+    inspectedImageHash: t.read("picture_12_attempt_2"),
+    requirementsReviewHash: hash(canonical(t.read("picture_12_requirements_v4_review_2"))),
+    meaningReviewHash: hash(canonical(t.read("picture_12_attempt_2_meaning_review_v2"))),
+    spread: 12, attempt: 2, scope: "retained_portrait_classification_only",
+    characterId: "ada", representation: "memory_portrait",
+    sceneEvidenceQuote: scene.physicalInteractions.at(-1),
+    reviewEvidenceQuote: t.read("picture_12_attempt_2_meaning_review_v2").evidence[0],
+    operatorObservation: "Synthetic test-only classification, not actual visual or family evidence.",
+    reason: "Separate the already verified portrait from foreground character presence.",
+  };
+  return { ...t, portraitInput: input };
+}
+
+test("retained portrait classification selects the exact earlier image locally without replay, slots or source changes", async (ctx) => {
+  const net = ctx.mock.method(globalThis, "fetch", async () => { throw new Error("No network allowed"); });
+  const t = await portraitFixture();
+  try {
+    const retained = t.store.all<{ stage: string }>("SELECT * FROM studio_steps WHERE jobId=? AND state='completed'", t.job.id);
+    const ledger = canonical(t.store.all("SELECT * FROM pilot_attempts"));
+    const slots = canonical(t.store.all("SELECT * FROM pilot_review_slot_uses"));
+    const original18 = canonical(t.store.all("SELECT * FROM pilot_review_slot_extensions"));
+    const source = canonical(t.store.all("SELECT * FROM almanac_sources"));
+    const calls = [...t.painter.calls];
+    const receipt = applyPortraitClassification(t.store, "operator", t.portraitInput);
+    assert.deepEqual(readPortraitClassification(t.store, t.job.id)!.record, receipt);
+    assert.equal(studioView(t.store, t.job.projectId)!.status, "needs_editor", "recording does not queue");
+    const recovery = studioRecovery(t.store, t.job.id)!;
+    assert.equal(recovery.portraitClassificationRepair, true);
+    resumeStudio(t.store, t.store.one<ProjectRow>("SELECT * FROM projects WHERE id=?", t.job.projectId)!,
+      { jobId: t.job.id, callId: recovery.callId, acknowledgePossibleCharge: false }, t.config);
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.equal(t.read(PORTRAIT_CLASSIFICATION_ACCEPTED), t.portraitInput.imageHash);
+    assert.equal(studioView(t.store, t.job.projectId)!.status, "needs_editor", "unapproved spread9 remains blocked");
+    assert.deepEqual(t.painter.calls, calls);
+    assert.equal(canonical(t.store.all("SELECT * FROM pilot_attempts")), ledger);
+    assert.equal(canonical(t.store.all("SELECT * FROM pilot_review_slot_uses")), slots);
+    assert.equal(canonical(t.store.all("SELECT * FROM pilot_review_slot_extensions")), original18);
+    assert.equal(canonical(t.store.all("SELECT * FROM almanac_sources")), source);
+    for (const row of retained) assert.deepEqual(t.store.one("SELECT * FROM studio_steps WHERE jobId=? AND stage=?", t.job.id, row.stage), row);
+    assert.deepEqual(applyPortraitClassification(t.store, "operator", t.portraitInput), receipt);
+    assert.equal(studioView(t.store, t.job.projectId)!.status, "needs_editor");
+    assert.throws(() => applyPortraitClassification(t.store, "operator", { ...t.portraitInput, reason: "A changed retry must not be silently accepted." }));
+    assert.throws(() => t.store.run("UPDATE pilot_portrait_classifications SET body='{}'"), /immutable/);
+    assert.throws(() => t.store.run("DELETE FROM pilot_portrait_classifications"), /append-only/);
+    assert.equal(net.mock.callCount(), 0);
+  } finally { t.close(); }
+});
+
+test("portrait classification requires exact bound evidence and a safe stopped owner-scoped job", async () => {
+  const t = await portraitFixture();
+  try {
+    assert.throws(() => applyPortraitClassification(t.store, "family", t.portraitInput));
+    for (const patch of [
+      ...["sourceHash", "manuscriptHash", "profileHash", "sceneHash", "canonHash", "imageHash", "inspectedImageHash", "requirementsReviewHash", "meaningReviewHash"].map(key => ({ [key]: hash("stale") })),
+      { ownerId: "other" }, { attempt: 3 }, { spread: 11 }, { characterId: "unknown" },
+      { characterId: "nell" }, { representation: "literal_person" },
+      { sceneEvidenceQuote: "Ada appears in a portrait but this sentence is not saved evidence." },
+      { reviewEvidenceQuote: "Ada appears in a portrait but this sentence is not saved evidence." },
+      { operatorObservation: "" },
+    ]) assert.throws(() => applyPortraitClassification(t.store, "operator", { ...t.portraitInput, ...patch }));
+    t.store.run("UPDATE studio_jobs SET leaseToken='active',leaseUntil=123 WHERE id=?", t.job.id);
+    assert.throws(() => applyPortraitClassification(t.store, "operator", t.portraitInput));
+    t.store.run("UPDATE studio_jobs SET leaseToken=NULL,leaseUntil=0,status='running' WHERE id=?", t.job.id);
+    assert.throws(() => applyPortraitClassification(t.store, "operator", t.portraitInput));
+    t.store.run("UPDATE studio_jobs SET status='needs_editor' WHERE id=?", t.job.id);
+    const row = t.store.one<{ id: string }>("SELECT id FROM pilot_attempts WHERE jobId=? LIMIT 1", t.job.id)!;
+    t.store.run("UPDATE pilot_attempts SET status='dispatched' WHERE id=?", row.id);
+    assert.throws(() => applyPortraitClassification(t.store, "operator", t.portraitInput));
+    assert.equal(t.store.all("SELECT * FROM pilot_portrait_classifications").length, 0);
+  } finally { t.close(); }
+});
+
+test("portrait classification cannot rescue any substantive failure or unsupported identity even with recomputed review hashes", async () => {
+  const t = await portraitFixture();
+  try {
+    const stage = "picture_12_attempt_2_meaning_review_v2", original = t.read(stage);
+    for (const patch of [
+      { identityConsistent: false }, { actionReadable: false }, { physicalCoherence: false },
+      { childAppropriate: false }, { unwantedLettering: true },
+      { protectedContradictions: [{ nuggetId: "n1", evidence: "A real protected contradiction" }] },
+      { unexpectedForegroundCharacters: ["extra"] }, { visibleCharacterIds: [] },
+      { visibleCharacterIds: ["nell", "nell"] }, { visibleCharacterIds: ["other"] },
+      { visibleCharacterIds: ["nell", "ada"] }, { evidence: ["No portrait identity evidence."] },
+    ]) {
+      const changed = { ...original, ...patch };
+      t.store.run("UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?", canonical(changed), t.job.id, stage);
+      assert.throws(() => applyPortraitClassification(t.store, "operator", { ...t.portraitInput, meaningReviewHash: hash(canonical(changed)) }));
+    }
+    t.store.run("UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?", canonical(original), t.job.id, stage);
+    for (const quote of [
+      "Ada cannot be identified in the portrait.",
+      "Ada is not recognizable in the memory portrait.",
+      "The portrait possibly shows Ada in the canonical apron.",
+      "Ada appears in a portrait, but the identity does not match the canonical reference.",
+    ]) {
+      const changed = { ...original, evidence: [quote] };
+      t.store.run("UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?", canonical(changed), t.job.id, stage);
+      assert.throws(() => applyPortraitClassification(t.store, "operator", {
+        ...t.portraitInput, meaningReviewHash: hash(canonical(changed)), reviewEvidenceQuote: quote,
+      }));
+    }
+    t.store.run("UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?", canonical(original), t.job.id, stage);
+    assert.throws(() => applyPortraitClassification(t.store, "operator", {
+      ...t.portraitInput, reviewEvidenceQuote: "portrait of a beaver in a sage apron sits on the table, matching the brief",
+    }), "partial quotations cannot discard surrounding uncertainty");
+    const requirementStage = "picture_12_requirements_v4_review_2", requirement = t.read(requirementStage);
+    for (const [dimension, score] of [["identity", 3], ["style", 2], ["actionReadability", 2], ["physicalCoherence", 2]]) {
+      const changed = { ...requirement, [dimension]: score };
+      t.store.run("UPDATE studio_steps SET result=? WHERE jobId=? AND stage=?", canonical(changed), t.job.id, requirementStage);
+      assert.throws(() => applyPortraitClassification(t.store, "operator", { ...t.portraitInput, requirementsReviewHash: hash(canonical(changed)) }));
+    }
+    assert.equal(t.store.all("SELECT * FROM pilot_portrait_classifications").length, 0);
+  } finally { t.close(); }
+});
+
+test("portrait evidence is revalidated before local acceptance after source drift", async () => {
+  const t = await portraitFixture();
+  try {
+    applyPortraitClassification(t.store, "operator", t.portraitInput);
+    const calls = [...t.painter.calls];
+    t.store.run("UPDATE projects SET transcript='{}' WHERE id=?", t.job.projectId);
+    assert.throws(() => readPortraitClassification(t.store, t.job.id));
+    t.store.run("UPDATE studio_jobs SET status='queued' WHERE id=?", t.job.id);
+    await runStudio(t.store, t.provider, t.config, { jobId: t.job.id });
+    assert.deepEqual(t.painter.calls, calls);
+    assert.equal(t.store.one("SELECT stage FROM studio_steps WHERE jobId=? AND stage=?", t.job.id, PORTRAIT_CLASSIFICATION_ACCEPTED), undefined);
+  } finally { t.close(); }
 });
